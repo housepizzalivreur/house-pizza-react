@@ -25,6 +25,18 @@ import saumonImg from "./assets/pizzas/saumon.png";
 import thonImg from "./assets/pizzas/thon.png";
 import vegetarienneImg from "./assets/pizzas/vegetarienne.png";
 
+import cocaCola33Img from "./assets/drinks/coca33.png";
+import oasisTropical33Img from "./assets/drinks/oasistropical33.png";
+import oasisPeche33Img from "./assets/drinks/oasispeche33.png";
+import orangina33Img from "./assets/drinks/orangina33.png";
+import schweppes33Img from "./assets/drinks/schweppesagrumes33.png";
+import cocaCola15Img from "./assets/drinks/coca15.png";
+import fanta15Img from "./assets/drinks/fanta15.png";
+import orangina15Img from "./assets/drinks/orangina15.png";
+import cocaCola2Img from "./assets/drinks/coca2.png";
+import stoneyGinger2lImg from "./assets/drinks/stoneyginger2l.png";
+import caribiaImg from "./assets/drinks/caribia.png";
+
 /* ═══════════════════════════════════════════════════
    DATA
 ═══════════════════════════════════════════════════ */
@@ -295,37 +307,79 @@ const EXTRAS = [
   "Ananas",
 ];
 
+// Affiche l'image de la boisson, fallback emoji si manquante
+function DrinkVisual({ drink, size = "md" }) {
+  const sizes = {
+    sm: "w-8 h-8",
+    md: "w-12 h-12",
+    lg: "w-16 h-16",
+    xl: "w-20 h-20",
+  };
+  const dim = sizes[size] || sizes.md;
+  const emojiSize =
+    {
+      sm: "text-2xl",
+      md: "text-3xl",
+      lg: "text-4xl",
+      xl: "text-5xl",
+    }[size] || "text-3xl";
+
+  if (drink?.image) {
+    return (
+      <img
+        src={drink.image}
+        alt={drink.name || "Boisson"}
+        className={`${dim} object-contain`}
+        loading="lazy"
+      />
+    );
+  }
+  return <span className={emojiSize}>{drink?.emoji || "🥤"}</span>;
+}
+
 const DRINKS = [
   // 33cl
-  { id: "d1", category: "33cl", name: "Coca-Cola 33cl", price: 2, emoji: "🥤" },
+  {
+    id: "d1",
+    category: "33cl",
+    name: "Coca-Cola 33cl",
+    price: 2,
+    image: cocaCola33Img,
+  },
   {
     id: "d2",
     category: "33cl",
     name: "Oasis Tropicale 33cl",
     price: 2,
-    emoji: "🥤",
+    image: oasisTropical33Img,
   },
   {
     id: "d2.1",
     category: "33cl",
     name: "Oasis Pêche 33cl",
     price: 2,
-    emoji: "🥤",
+    image: oasisPeche33Img,
   },
   {
     id: "d3",
     category: "33cl",
-    name: "Stoney Gingembre 33cl",
+    name: "Caribia 33cl",
     price: 2,
-    emoji: "🥤",
+    image: caribiaImg,
   },
-  { id: "d4", category: "33cl", name: "Orangina 33cl", price: 2, emoji: "🥤" },
+  {
+    id: "d4",
+    category: "33cl",
+    name: "Orangina 33cl",
+    price: 2,
+    image: orangina33Img,
+  },
   {
     id: "d5",
     category: "33cl",
     name: "Schweppes Agrume 33cl",
     price: 2,
-    emoji: "🥤",
+    image: schweppes33Img,
   },
 
   // 1.5L
@@ -334,31 +388,37 @@ const DRINKS = [
     category: "1.5L",
     name: "Coca-Cola 1.5L",
     price: 3.5,
-    emoji: "🍾",
+    image: cocaCola15Img,
   },
   {
     id: "d7",
     category: "1.5L",
     name: "Fanta Ananas 1.5L",
     price: 3.5,
-    emoji: "🍾",
+    image: fanta15Img,
   },
   {
     id: "d8",
     category: "1.5L",
     name: "Orangina 1.5L",
     price: 3.5,
-    emoji: "🍾",
+    image: orangina15Img,
   },
 
   // 2L
-  { id: "d9", category: "2L", name: "Coca-Cola 2L", price: 5, emoji: "🍾" },
+  {
+    id: "d9",
+    category: "2L",
+    name: "Coca-Cola 2L",
+    price: 5,
+    image: cocaCola2Img,
+  },
   {
     id: "d10",
     category: "2L",
     name: "Stoney Gingembre 2L",
     price: 5,
-    emoji: "🍾",
+    image: stoneyGinger2lImg,
   },
 ];
 
@@ -2824,7 +2884,7 @@ function DrinkUpsellModal({ onAddDrink, onContinue, dark }) {
                     <div
                       className={`${vs.bg} rounded-2xl w-14 h-14 flex flex-col items-center justify-center shrink-0 shadow-md`}
                     >
-                      <span className={vs.size}>{d.emoji}</span>
+                      <DrinkVisual drink={d} size="md" />
                       <span className="text-white text-[10px] font-black leading-none mt-0.5">
                         {vs.label}
                       </span>
@@ -2913,7 +2973,7 @@ function DrinkUpsellModal({ onAddDrink, onContinue, dark }) {
                           >
                             {/* Emoji + badge contenance */}
                             <div className="relative">
-                              <span className="text-2xl">{d.emoji}</span>
+                              <DrinkVisual drink={d} size="sm" />
                               <span
                                 className={`absolute -bottom-1 -right-2 ${vs.bg} text-white text-[8px] font-black px-1 py-0.5 rounded-full leading-none`}
                               >
@@ -2993,7 +3053,7 @@ function FreeDrinkModal({ onAddDrink, onSkip, dark }) {
                 className={`flex flex-col items-center gap-2 rounded-2xl border-2 px-3 py-4 active:scale-95 transition-all font-semibold text-sm
                   ${dark ? "border-zinc-700 bg-zinc-800 hover:border-emerald-500 text-zinc-200" : "border-gray-200 bg-white hover:border-emerald-400 text-gray-800"}`}
               >
-                <span className="text-3xl">{d.emoji}</span>
+                <DrinkVisual drink={d} size="md" />
                 <span className="text-center leading-tight">
                   {d.name.replace(" 33cl", "")}
                 </span>
@@ -3097,7 +3157,19 @@ function CartView({
             key={idx}
             className={`flex items-center gap-3 px-5 py-4 border-b ${th.border(dark)} last:border-0`}
           >
-            <span className="text-2xl shrink-0">{item.emoji}</span>
+            {item.type === "pizza" ? (
+              item.image ? (
+                <img
+                  src={item.image}
+                  alt={item.name}
+                  className="w-10 h-10 rounded-lg object-cover shrink-0"
+                />
+              ) : (
+                <span className="text-2xl shrink-0">🍕</span>
+              )
+            ) : (
+              <DrinkVisual drink={item} size="sm" />
+            )}
             <div className="flex-1 min-w-0">
               <p className={`font-semibold text-sm ${th.text(dark)}`}>
                 {item.name}
@@ -5701,6 +5773,7 @@ export default function HousePizza() {
         {
           type: "pizza",
           name: pizza.name,
+          image: pizza.image,
           size,
           crust,
           extras,
@@ -5723,12 +5796,13 @@ export default function HousePizza() {
         {
           type: "drink",
           name: drink.name,
-          emoji: drink.emoji,
+          image: drink.image,
+          emoji: drink.emoji, // garde l'emoji pour le fallback
           volume: drink.category,
           price: drink.price,
         },
       ]);
-      showToast(`${drink.emoji} Boisson ajoutée !`);
+      showToast(`${drink.name} ajoutée !`);
     },
     [showToast],
   );
@@ -5843,6 +5917,7 @@ export default function HousePizza() {
               {
                 type: "drink",
                 name: drink.name,
+                image: drink.image,
                 emoji: drink.emoji,
                 volume: drink.category,
                 price: 0,
@@ -6041,10 +6116,11 @@ export default function HousePizza() {
                     return (
                       <div
                         key={d.id}
-                        className={`rounded-2xl p-4 border shadow-sm ${th.card(dark)}`}
+                        onClick={() => addDrink(d)}
+                        className={`rounded-2xl p-4 border shadow-sm cursor-pointer active:scale-[0.98] transition-all ${th.card(dark)} ${th.cardHover(dark)}`}
                       >
                         <div className="relative inline-block mb-2">
-                          <span className="text-3xl">{d.emoji}</span>
+                          <DrinkVisual drink={d} size="md" />
                           <span
                             className={`absolute -bottom-1 -right-3 ${vs.bg} text-white text-[9px] font-black px-1.5 py-0.5 rounded-full leading-none`}
                           >
@@ -6061,7 +6137,10 @@ export default function HousePizza() {
                             {d.price.toFixed(2)}€
                           </span>
                           <button
-                            onClick={() => addDrink(d)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              addDrink(d);
+                            }}
                             className="w-8 h-8 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white flex items-center justify-center font-bold text-lg active:scale-95 transition-colors"
                           >
                             +
