@@ -3023,31 +3023,42 @@ function FreeDrinkModal({ onAddDrink, onSkip, dark }) {
    STICKY CART BAR
 ═══════════════════════════════════════════════════ */
 
-function StickyCart({ cart, total, onView, dark }) {
+function StickyCart({ cart, total, onOpenCart }) {
   if (cart.length === 0) return null;
-  const itemCount = cart.length;
-
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-sm">
-      <button
-        onClick={onView}
-        className="w-full bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition-all text-white rounded-full shadow-2xl shadow-emerald-900/40 flex items-center justify-between gap-3 pl-4 pr-2 py-2"
-      >
-        <span className="flex items-center gap-2 min-w-0">
-          <span className="relative shrink-0">
-            <span className="text-xl">🛒</span>
-            <span className="absolute -top-1 -right-2 bg-white text-emerald-700 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">
-              {itemCount}
+    <div
+      className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none"
+      style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+    >
+      {/* Desktop : barre fine ancrée à droite */}
+      <div className="hidden sm:flex justify-end px-6 pb-4 pointer-events-none">
+        <button
+          onClick={onOpenCart}
+          className="pointer-events-auto flex items-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white pl-4 pr-5 py-2.5 rounded-2xl shadow-2xl active:scale-[0.98] transition-all"
+        >
+          <span className="bg-white/20 rounded-lg w-7 h-7 flex items-center justify-center font-bold text-xs">
+            {cart.length}
+          </span>
+          <span className="font-semibold text-sm">Panier</span>
+          <span className="font-bold text-sm">{total.toFixed(2)} €</span>
+        </button>
+      </div>
+
+      {/* Mobile : barre fine pleine largeur */}
+      <div className="sm:hidden px-3 pb-3 pointer-events-none">
+        <button
+          onClick={onOpenCart}
+          className="pointer-events-auto w-full flex items-center justify-between bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-2xl shadow-2xl active:scale-[0.98] transition-all"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="bg-white/20 rounded-lg w-7 h-7 flex items-center justify-center font-bold text-xs shrink-0">
+              {cart.length}
             </span>
-          </span>
-          <span className="font-bold text-sm truncate">
-            {total.toFixed(2).replace(".", ",")}€
-          </span>
-        </span>
-        <span className="bg-white/20 rounded-full px-3 py-1.5 text-xs font-bold whitespace-nowrap">
-          Voir →
-        </span>
-      </button>
+            <span className="font-semibold text-sm">Voir le panier</span>
+          </div>
+          <span className="font-bold text-sm">{total.toFixed(2)} €</span>
+        </button>
+      </div>
     </div>
   );
 }
