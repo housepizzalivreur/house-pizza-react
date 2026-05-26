@@ -1,5 +1,7 @@
 import HousePizza from "./HousePizza";
 
-export default function App() {
+function App() {
   return <HousePizza />;
 }
+
+export default App;

@@ -1,14 +1,40 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 
+import cardLogo from "./assets/payments/card.png";
+import applePayLogo from "./assets/payments/applepay.svg";
+import googlePayLogo from "./assets/payments/googlepay.svg";
+
+import quatreFromagesImg from "./assets/pizzas/4fromages.png";
+import quatreSaisonsImg from "./assets/pizzas/4saisons.png";
+import benaraImg from "./assets/pizzas/benara.png";
+import bolognaiseImg from "./assets/pizzas/bolognaise.png";
+import bouchonImg from "./assets/pizzas/bouchon.png";
+import carnivoreImg from "./assets/pizzas/carnivore.png";
+import catalaneImg from "./assets/pizzas/catalane.png";
+import chevreMielImg from "./assets/pizzas/chevre-miel.png";
+import exotiqueImg from "./assets/pizzas/exotique.png";
+import hawaienneImg from "./assets/pizzas/hawaienne.png";
+import kebabImg from "./assets/pizzas/kebab.png";
+import margaritaImg from "./assets/pizzas/margarita.png";
+import mexicaineImg from "./assets/pizzas/mexicaine.png";
+import mozzarellaImg from "./assets/pizzas/mozzarella.png";
+import oceaneImg from "./assets/pizzas/oceane.png";
+import orientaleImg from "./assets/pizzas/orientale.png";
+import roquefortImg from "./assets/pizzas/roquefort.png";
+import saumonImg from "./assets/pizzas/saumon.png";
+import thonImg from "./assets/pizzas/thon.png";
+import vegetarienneImg from "./assets/pizzas/vegetarienne.png";
+
 /* ═══════════════════════════════════════════════════
    DATA
 ═══════════════════════════════════════════════════ */
 
-// prices: { large: Ø33, medium: Ø29 (fixe 11.90), small: Ø26 (fixe 9.90) }
-// Les tailles Ø29 et Ø26 ont un prix unique pour toutes les pizzas.
-// La taille Ø26 inclut 1 boisson 33cl offerte.
-const PIZZA_PRICE_SMALL = 9.9; // Ø26 - prix unique toutes pizzas
-const PIZZA_PRICE_MEDIUM = 11.9; // Ø29 - prix unique toutes pizzas
+// Ø26 : prix unique 9,90€ + 1 boisson 33cl offerte
+// Ø29 : 11,90€ pour pizzas classiques · 12,90€ pour pizzas premium (large à 16€)
+// Ø33 : prix variable selon la pizza
+const PIZZA_PRICE_SMALL = 9.9;
+const PIZZA_PRICE_MEDIUM_STD = 11.9;
+const PIZZA_PRICE_MEDIUM_PREM = 12.9;
 
 const PIZZAS = [
   {
@@ -16,162 +42,242 @@ const PIZZAS = [
     category: "Sauce tomate",
     name: "Margarita",
     desc: "Olives, fromage fondant",
-    prices: { large: 12, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
+    prices: {
+      large: 12,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
     bestSeller: true,
-    emoji: "🍕",
+    image: margaritaImg,
   },
   {
     id: 2,
     category: "Sauce tomate",
     name: "Orientale",
     desc: "Fromage, merguez, poivrons, oignons et olives",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🌶️",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: orientaleImg,
   },
   {
     id: 3,
     category: "Sauce tomate",
     name: "Mexicaine",
     desc: "Poulet au curry, poivrons, oignons et fromage",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🌮",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: mexicaineImg,
   },
   {
     id: 4,
     category: "Sauce tomate",
     name: "Végétarienne",
     desc: "Champignons, fromage, mozzarella, olives, poivron et oignon",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥦",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: vegetarienneImg,
   },
   {
     id: 5,
     category: "Sauce tomate",
     name: "Catalane",
     desc: "Fromage, chorizo (halal), poivrons",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥩",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: catalaneImg,
   },
   {
     id: 6,
     category: "Sauce tomate",
     name: "Hawaïenne",
     desc: "Fromage, ananas, poulet",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🍍",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: hawaienneImg,
   },
   {
     id: 7,
     category: "Sauce tomate",
     name: "Bolognaise",
     desc: "Oignons, bœuf haché, œuf et fromage",
-    prices: { large: 15, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥚",
+    prices: {
+      large: 15,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: bolognaiseImg,
   },
   {
     id: 8,
     category: "Sauce tomate",
     name: "Carnivore",
     desc: "Bœuf, merguez, poulet et fromage",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥓",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: carnivoreImg,
   },
   {
     id: 9,
     category: "Sauce tomate",
     name: "Roquefort",
     desc: "Roquefort et fromage fondu",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🧀",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: roquefortImg,
   },
   {
     id: 10,
     category: "Sauce tomate",
     name: "Mozzarella",
     desc: "Mozzarella fraîche, persil et fromage",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🫕",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: mozzarellaImg,
   },
   {
     id: 11,
     category: "Sauce tomate",
     name: "Bouchon",
     desc: "Bouchons, pommes de terre, oignons, olives et fromage",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥔",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: bouchonImg,
   },
   {
     id: 12,
     category: "Crème fraîche",
     name: "Chèvre Miel",
     desc: "Fromage de chèvre, miel, herbes de Provence",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
     bestSeller: true,
-    emoji: "🍯",
+    image: chevreMielImg,
   },
   {
     id: 13,
     category: "Crème fraîche",
     name: "Thon",
     desc: "Thon, poivrons et oignons",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🐟",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: thonImg,
   },
   {
     id: 14,
     category: "Crème fraîche",
     name: "Océane",
     desc: "Fruits de mer, oignons et fromage",
-    prices: { large: 14, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🦞",
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: oceaneImg,
   },
   {
     id: 15,
     category: "Crème fraîche",
     name: "Kebab",
     desc: "Kebab, sauce tomate et fromage fondant",
-    prices: { large: 15, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🥙",
+    prices: {
+      large: 15,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: kebabImg,
   },
   {
     id: 16,
     category: "Crème fraîche",
     name: "Saumon",
     desc: "Saumon fumé, fromage et persil",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🍣",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: saumonImg,
   },
   {
     id: 17,
     category: "Crème fraîche",
     name: "Benara",
     desc: "Bœuf, pomme de terre, poivrons et fromage",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🐂",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: benaraImg,
   },
   {
     id: 18,
     category: "Crème fraîche",
     name: "4 Fromages",
     desc: "Chèvre-bleu, mozzarella et emmental",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🧀",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: quatreFromagesImg,
   },
   {
     id: 19,
     category: "Crème fraîche",
     name: "4 Saisons",
     desc: "Mozzarella, fromage, poivrons, champignons et olives",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🍄",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: quatreSaisonsImg,
   },
   {
     id: 20,
     category: "Crème fraîche",
     name: "Exotique",
     desc: "Tomates, fromage, fruits de mer, ananas et olives",
-    prices: { large: 16, medium: PIZZA_PRICE_MEDIUM, small: PIZZA_PRICE_SMALL },
-    emoji: "🌴",
+    prices: {
+      large: 16,
+      medium: PIZZA_PRICE_MEDIUM_PREM,
+      small: PIZZA_PRICE_SMALL,
+    },
+    image: exotiqueImg,
   },
 ];
 
@@ -191,13 +297,7 @@ const EXTRAS = [
 
 const DRINKS = [
   // 33cl
-  {
-    id: "d1",
-    category: "33cl",
-    name: "Coca-Cola 33cl",
-    price: 2,
-    emoji: "🥤",
-  },
+  { id: "d1", category: "33cl", name: "Coca-Cola 33cl", price: 2, emoji: "🥤" },
   {
     id: "d2",
     category: "33cl",
@@ -219,13 +319,7 @@ const DRINKS = [
     price: 2,
     emoji: "🥤",
   },
-  {
-    id: "d4",
-    category: "33cl",
-    name: "Orangina 33cl",
-    price: 2,
-    emoji: "🥤",
-  },
+  { id: "d4", category: "33cl", name: "Orangina 33cl", price: 2, emoji: "🥤" },
   {
     id: "d5",
     category: "33cl",
@@ -258,13 +352,7 @@ const DRINKS = [
   },
 
   // 2L
-  {
-    id: "d9",
-    category: "2L",
-    name: "Coca-Cola 2L",
-    price: 5,
-    emoji: "🍾",
-  },
+  { id: "d9", category: "2L", name: "Coca-Cola 2L", price: 5, emoji: "🍾" },
   {
     id: "d10",
     category: "2L",
@@ -2371,13 +2459,28 @@ function AddressAutocomplete({
 ═══════════════════════════════════════════════════ */
 
 function PizzaCard({ pizza, onSelect, dark }) {
+  // Compatibilité ascendante : on lit pizza.prices.X OU pizza.X direct
+  const priceLarge = pizza.prices?.large ?? pizza.large;
+  const priceMedium = pizza.prices?.medium ?? pizza.medium;
+  const priceSmall = pizza.prices?.small ?? pizza.small;
+
   return (
     <div
       onClick={() => onSelect(pizza)}
       className={`rounded-3xl p-5 shadow-sm border cursor-pointer active:scale-[0.98] transition-all group ${th.card(dark)} ${th.cardHover(dark)}`}
     >
       <div className="flex items-start justify-between mb-3">
-        <span className="text-4xl">{pizza.emoji}</span>
+        {/* Image de la pizza, fallback sur emoji si absente */}
+        {pizza.image ? (
+          <img
+            src={pizza.image}
+            alt={pizza.name}
+            loading="lazy"
+            className="w-16 h-16 rounded-2xl object-cover shadow-sm"
+          />
+        ) : (
+          <span className="text-4xl">{pizza.emoji}</span>
+        )}
         {pizza.bestSeller && (
           <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
             🔥 Best Seller
@@ -2399,21 +2502,26 @@ function PizzaCard({ pizza, onSelect, dark }) {
       </p>
       <div className="flex items-center justify-between">
         <div className={`flex gap-2 text-xs ${th.textSub(dark)}`}>
-          <span className="flex flex-col items-center">
-            <span className="text-[10px] opacity-70">Ø33</span>
-            <span className={`font-bold text-sm ${th.text(dark)}`}>
-              {pizza.prices.large}€
-            </span>
-          </span>
-          <span
-            className={`w-px self-stretch ${dark ? "bg-zinc-700" : "bg-gray-200"}`}
-          />
+          {/* Ø33 affiché seulement si le prix existe */}
+          {priceLarge != null && (
+            <>
+              <span className="flex flex-col items-center">
+                <span className="text-[10px] opacity-70">Ø33</span>
+                <span className={`font-bold text-sm ${th.text(dark)}`}>
+                  {Number(priceLarge).toFixed(2).replace(".", ",")}€
+                </span>
+              </span>
+              <span
+                className={`w-px self-stretch ${dark ? "bg-zinc-700" : "bg-gray-200"}`}
+              />
+            </>
+          )}
           <span className="flex flex-col items-center">
             <span className="text-[10px] text-amber-500 font-semibold">
               Ø29 ✨
             </span>
             <span className="font-bold text-sm text-amber-500">
-              {pizza.prices.medium.toFixed(2).replace(".", ",")}€
+              {Number(priceMedium).toFixed(2).replace(".", ",")}€
             </span>
           </span>
           <span
@@ -2424,7 +2532,7 @@ function PizzaCard({ pizza, onSelect, dark }) {
               Ø26 🎁
             </span>
             <span className="font-bold text-sm text-orange-500">
-              {pizza.prices.small.toFixed(2).replace(".", ",")}€
+              {Number(priceSmall).toFixed(2).replace(".", ",")}€
             </span>
           </span>
         </div>
@@ -2457,14 +2565,23 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
           className={`sticky top-0 ${th.modalHead(dark)} px-6 pt-6 pb-4 border-b ${th.border(dark)}`}
         >
           <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="text-3xl">{pizza.emoji}</span>
+            <div className="flex items-start gap-3 flex-1 min-w-0">
+              {/* Petite image (fallback emoji si jamais) */}
+              {pizza.image ? (
+                <img
+                  src={pizza.image}
+                  alt={pizza.name}
+                  className="w-14 h-14 rounded-xl object-cover shadow-sm shrink-0"
+                />
+              ) : (
+                <span className="text-3xl shrink-0">{pizza.emoji}</span>
+              )}
+              <div className="min-w-0">
                 <h2 className={`text-2xl font-bold ${th.text(dark)}`}>
                   {pizza.name}
                 </h2>
+                <p className={`text-sm ${th.textSub(dark)}`}>{pizza.desc}</p>
               </div>
-              <p className={`text-sm ${th.textSub(dark)}`}>{pizza.desc}</p>
             </div>
             <button
               onClick={onClose}
@@ -2480,13 +2597,13 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
           <div>
             <h3 className={`font-bold mb-3 ${th.text(dark)}`}>Taille</h3>
 
-            {/* Bandeau exclusivité tailles Ø29 et Ø26 */}
+            {/* Bandeau exclusivité Ø26 */}
             <div
               className={`rounded-xl px-3 py-2 mb-3 text-xs font-semibold flex items-center gap-2 ${dark ? "bg-amber-950 text-amber-300 border border-amber-800" : "bg-amber-50 text-amber-800 border border-amber-200"}`}
             >
               <span>✨</span>
               <span>
-                Exclusivité House Pizza - tailles Ø29 et Ø26 à prix unique !
+                Exclusivité House Pizza — Ø26 à 9,90€ avec boisson offerte !
               </span>
             </div>
 
@@ -2631,7 +2748,7 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
           >
             <span>Ajouter au panier</span>
             <span className="bg-white/20 px-3 py-1 rounded-xl">
-              {price.toFixed(2)}€
+              {price.toFixed(2).replace(".", ",")}€
             </span>
           </button>
         </div>
@@ -2639,7 +2756,6 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
     </div>
   );
 }
-
 /* ═══════════════════════════════════════════════════
    DRINK UPSELL MODAL - Sélection intelligente
    • Mode compact : 1 représentant par contenance + "Voir tout"
@@ -2907,42 +3023,31 @@ function FreeDrinkModal({ onAddDrink, onSkip, dark }) {
    STICKY CART BAR
 ═══════════════════════════════════════════════════ */
 
-function StickyCart({ cart, total, onOpenCart }) {
+function StickyCart({ cart, total, onView, dark }) {
   if (cart.length === 0) return null;
-  return (
-    <div
-      className="fixed bottom-0 left-0 right-0 z-50 pointer-events-none"
-      style={{ paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
-    >
-      {/* Desktop : barre fine ancrée à droite */}
-      <div className="hidden sm:flex justify-end px-6 pb-4 pointer-events-none">
-        <button
-          onClick={onOpenCart}
-          className="pointer-events-auto flex items-center gap-3 bg-emerald-600 hover:bg-emerald-700 text-white pl-4 pr-5 py-2.5 rounded-2xl shadow-2xl active:scale-[0.98] transition-all"
-        >
-          <span className="bg-white/20 rounded-lg w-7 h-7 flex items-center justify-center font-bold text-xs">
-            {cart.length}
-          </span>
-          <span className="font-semibold text-sm">Panier</span>
-          <span className="font-bold text-sm">{total.toFixed(2)} €</span>
-        </button>
-      </div>
+  const itemCount = cart.length;
 
-      {/* Mobile : barre fine pleine largeur */}
-      <div className="sm:hidden px-3 pb-3 pointer-events-none">
-        <button
-          onClick={onOpenCart}
-          className="pointer-events-auto w-full flex items-center justify-between bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2.5 rounded-2xl shadow-2xl active:scale-[0.98] transition-all"
-        >
-          <div className="flex items-center gap-2.5">
-            <span className="bg-white/20 rounded-lg w-7 h-7 flex items-center justify-center font-bold text-xs shrink-0">
-              {cart.length}
+  return (
+    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 w-[calc(100%-2rem)] max-w-sm">
+      <button
+        onClick={onView}
+        className="w-full bg-emerald-600 hover:bg-emerald-700 active:scale-[0.98] transition-all text-white rounded-full shadow-2xl shadow-emerald-900/40 flex items-center justify-between gap-3 pl-4 pr-2 py-2"
+      >
+        <span className="flex items-center gap-2 min-w-0">
+          <span className="relative shrink-0">
+            <span className="text-xl">🛒</span>
+            <span className="absolute -top-1 -right-2 bg-white text-emerald-700 text-[10px] font-black w-4 h-4 rounded-full flex items-center justify-center">
+              {itemCount}
             </span>
-            <span className="font-semibold text-sm">Voir le panier</span>
-          </div>
-          <span className="font-bold text-sm">{total.toFixed(2)} €</span>
-        </button>
-      </div>
+          </span>
+          <span className="font-bold text-sm truncate">
+            {total.toFixed(2).replace(".", ",")}€
+          </span>
+        </span>
+        <span className="bg-white/20 rounded-full px-3 py-1.5 text-xs font-bold whitespace-nowrap">
+          Voir →
+        </span>
+      </button>
     </div>
   );
 }
@@ -3156,27 +3261,36 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
   const PAYMENT_OPTIONS = [
     {
       key: "card",
-      label: "💳 Carte bancaire",
+      label: "Carte bancaire",
+      logo: cardLogo,
       desc: "Visa, Mastercard - paiement sécurisé en ligne",
       onlineOnly: false,
     },
     {
       key: "applepay",
-      label: "🍎 Apple Pay",
+      label: "Apple Pay",
+      logo: applePayLogo,
       desc: "Paiement rapide via Face ID / Touch ID",
       onlineOnly: false,
     },
     {
       key: "googlepay",
-      label: "🔵 Google Pay",
+      label: "Google Pay",
+      logo: googlePayLogo,
       desc: "Paiement rapide via votre compte Google",
       onlineOnly: false,
     },
     {
-      key: "cash",
-      label: "💵 Espèces à la livraison",
-      desc: "Cash à la réception de votre commande",
-      onlineOnly: true,
+      key: "carteresto",
+      label: "Carte Restaurant®",
+      desc: "Edenred, Swile, etc.",
+      onlineOnly: false,
+    },
+    {
+      key: "wero",
+      label: "WERO®",
+      desc: "Paiement instantané",
+      onlineOnly: false,
     },
   ];
 
@@ -3272,7 +3386,7 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
           <h3 className={`font-bold mb-2 ${th.text(dark)}`}>
             Mode de paiement
           </h3>
-          {availablePayments.map(({ key, label, desc }) => (
+          {availablePayments.map(({ key, label, desc, logo }) => (
             <button
               key={key}
               onClick={() => setPaymentMethod(key)}
@@ -3287,11 +3401,22 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
                       : "border-gray-200 hover:border-gray-300"
                 }`}
             >
-              <div>
-                <p className={`font-semibold text-sm ${th.text(dark)}`}>
-                  {label}
-                </p>
-                <p className={`text-xs mt-0.5 ${th.textSub(dark)}`}>{desc}</p>
+              <div className="flex items-center gap-3">
+                {logo && (
+                  <img
+                    src={logo}
+                    alt={label}
+                    className="w-12 h-12 object-contain"
+                  />
+                )}
+
+                <div>
+                  <p className={`font-semibold text-sm ${th.text(dark)}`}>
+                    {label}
+                  </p>
+
+                  <p className={`text-xs mt-0.5 ${th.textSub(dark)}`}>{desc}</p>
+                </div>
               </div>
               <div
                 className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 ml-3
@@ -5509,7 +5634,7 @@ function Footer({ dark, onAdmin, onDriver, user, onTrack, onLegal }) {
    MAIN APP
 ═══════════════════════════════════════════════════ */
 
-export default function HousePizza3() {
+export default function HousePizza() {
   const { dark, toggleDark } = useDark();
   const [cart, setCart] = useState([]);
   const [step, setStep] = useState("menu");
@@ -5565,14 +5690,13 @@ export default function HousePizza3() {
         {
           type: "pizza",
           name: pizza.name,
-          emoji: pizza.emoji,
           size,
           crust,
           extras,
           price,
         },
       ]);
-      showToast(`${pizza.emoji} ${pizza.name} ajoutée !`);
+      showToast(`${pizza.name} ajoutée !`);
       // Boisson 33cl offerte pour toute pizza Ø26
       if (size === "small") {
         setTimeout(() => setFreeDrinkModal(true), 400);
