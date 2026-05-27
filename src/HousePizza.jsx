@@ -558,6 +558,179 @@ const RexDB = {
 };
 
 /* ═══════════════════════════════════════════════════
+   PRICES DB - surcharge admin des prix (hp_prices)
+   Structure : {
+     extras: number,          // prix supplément (défaut 2)
+     delivery: number,        // livraison sans pizza (défaut 2)
+     pizzas: { [id]: { large?, medium?, small? } },
+     drinks: { [id]: number }
+   }
+═══════════════════════════════════════════════════ */
+const PricesDB = {
+  KEY: "hp_prices",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "null");
+      return raw && typeof raw === "object" ? raw : {};
+    } catch {
+      return {};
+    }
+  },
+  save(data) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(data));
+    } catch {}
+  },
+  // Prix d'une pizza (taille = large|medium|small)
+  pizzaPrice(pizza, size) {
+    const ov = this.load();
+    return ov?.pizzas?.[pizza.id]?.[size] ?? pizza.prices[size];
+  },
+  // Prix d'une boisson
+  drinkPrice(drink) {
+    const ov = this.load();
+    return ov?.drinks?.[drink.id] ?? drink.price;
+  },
+  // Prix d'un supplément
+  extraPrice() {
+    const ov = this.load();
+    return ov?.extras ?? 2;
+  },
+  // Frais livraison sans pizza
+  deliveryFee() {
+    const ov = this.load();
+    return ov?.delivery ?? 2;
+  },
+};
+
+/* ═══════════════════════════════════════════════════
+   INVENTORY DB - gestion des stocks (hp_inventory)
+   Article : { id, name, unit, qty, minQty, buyPrice,
+               supplier, lastBought, history: [{date, qty, price, supplier}] }
+═══════════════════════════════════════════════════ */
+const InventoryDB = {
+  KEY: "hp_inventory",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  },
+  _save(arr) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(arr));
+    } catch {}
+  },
+  add(item) {
+    const list = this.load();
+    const record = {
+      id: `inv_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+      history: [],
+      ...item,
+    };
+    if (item.qty > 0) {
+      record.history = [
+        {
+          date: Date.now(),
+          qty: item.qty,
+          price: item.buyPrice,
+          supplier: item.supplier,
+        },
+      ];
+    }
+    list.unshift(record);
+    this._save(list);
+    return record;
+  },
+  update(id, patch) {
+    const list = this.load().map((it) =>
+      it.id === id ? { ...it, ...patch } : it,
+    );
+    this._save(list);
+  },
+  restock(id, qty, price, supplier) {
+    const list = this.load();
+    const idx = list.findIndex((it) => it.id === id);
+    if (idx === -1) return;
+    list[idx].qty = (list[idx].qty || 0) + qty;
+    list[idx].buyPrice = price;
+    list[idx].supplier = supplier || list[idx].supplier;
+    list[idx].lastBought = Date.now();
+    list[idx].history = [
+      {
+        date: Date.now(),
+        qty,
+        price,
+        supplier: supplier || list[idx].supplier,
+      },
+      ...(list[idx].history || []),
+    ].slice(0, 50);
+    this._save(list);
+  },
+  remove(id) {
+    this._save(this.load().filter((it) => it.id !== id));
+  },
+};
+
+/* ═══════════════════════════════════════════════════
+   OFFERS DB - offres admin automatiques (hp_offers)
+   Offre : { id, label, type, target, value, validFrom, validTo,
+             maxUses, usedCount, active }
+   type : "pct" | "fixed" | "2for1" | "free_drink" | "fixed_price"
+   target : { scope:"all"|"pizza"|"drink",
+              pizzaIds:[], sizes:[], drinkIds:[] }
+═══════════════════════════════════════════════════ */
+const OffersDB = {
+  KEY: "hp_offers",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  },
+  _save(arr) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(arr));
+    } catch {}
+  },
+  add(offer) {
+    const list = this.load();
+    const record = {
+      id: `off_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      createdAt: Date.now(),
+      usedCount: 0,
+      active: true,
+      ...offer,
+    };
+    list.unshift(record);
+    this._save(list);
+    return record;
+  },
+  update(id, patch) {
+    this._save(this.load().map((o) => (o.id === id ? { ...o, ...patch } : o)));
+  },
+  remove(id) {
+    this._save(this.load().filter((o) => o.id !== id));
+  },
+  // Retourne les offres actives et valides à cet instant
+  active() {
+    const now = Date.now();
+    return this.load().filter((o) => {
+      if (!o.active) return false;
+      if (o.validFrom && now < o.validFrom) return false;
+      if (o.validTo && now > o.validTo) return false;
+      if (o.maxUses && o.usedCount >= o.maxUses) return false;
+      return true;
+    });
+  },
+};
+
+/* ═══════════════════════════════════════════════════
    BLACKLIST DB - Calcul dynamique des risques clients
    - 1 incident  = ⚠️ drapeau (avertissement)
    - 2+ incidents = 🚫 blocage commande
@@ -2852,9 +3025,9 @@ function AddressAutocomplete({
 
 function PizzaCard({ pizza, onSelect, dark }) {
   // Compatibilité ascendante : on lit pizza.prices.X OU pizza.X direct
-  const priceLarge = pizza.prices?.large ?? pizza.large;
-  const priceMedium = pizza.prices?.medium ?? pizza.medium;
-  const priceSmall = pizza.prices?.small ?? pizza.small;
+  const priceLarge = PricesDB.pizzaPrice(pizza, "large");
+  const priceMedium = PricesDB.pizzaPrice(pizza, "medium");
+  const priceSmall = PricesDB.pizzaPrice(pizza, "small");
 
   return (
     <div
@@ -2946,7 +3119,9 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
   const [extras, setExtras] = useState([]);
   const toggle = (e) =>
     setExtras((p) => (p.includes(e) ? p.filter((x) => x !== e) : [...p, e]));
-  const price = pizza.prices[size] + extras.length * 2;
+  const extraUnitPrice = PricesDB.extraPrice();
+  const price =
+    PricesDB.pizzaPrice(pizza, size) + extras.length * extraUnitPrice;
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[80] flex items-end sm:items-center justify-center">
@@ -3472,6 +3647,8 @@ function CartView({
   hasPizza,
   canCheckout,
   missingForMin,
+  offerDiscount = 0,
+  offerLabel = "",
 }) {
   return (
     <div className="max-w-2xl mx-auto px-4 pb-32 pt-6">
@@ -3551,6 +3728,16 @@ function CartView({
           <span>Sous-total</span>
           <span>{totalRaw.toFixed(2)}€</span>
         </div>
+        {offerDiscount > 0 && (
+          <div className="flex justify-between items-center">
+            <span className="text-sm text-emerald-600 font-semibold">
+              🎁 {offerLabel}
+            </span>
+            <span className="text-sm font-bold text-emerald-600">
+              −{offerDiscount.toFixed(2).replace(".", ",")} €
+            </span>
+          </div>
+        )}
         <div
           className={`flex justify-between text-sm font-semibold ${
             deliveryFee > 0 ? "text-orange-500" : "text-emerald-500"
@@ -5709,6 +5896,1294 @@ function AccessManager({ dark }) {
     </div>
   );
 }
+
+/* ═══════════════════════════════════════════════════
+   INVENTORY PANEL
+═══════════════════════════════════════════════════ */
+const UNITS = [
+  "kg",
+  "g",
+  "L",
+  "cl",
+  "unité(s)",
+  "lot(s)",
+  "sachet(s)",
+  "boîte(s)",
+  "bouteille(s)",
+];
+
+function InventoryPanel({ dark }) {
+  const [items, setItems] = useState(() => InventoryDB.load());
+  const [tab, setTab] = useState("list"); // list | add | restock | history
+  const [selectedId, setSelectedId] = useState(null);
+  const [filter, setFilter] = useState(""); // recherche
+  const [editId, setEditId] = useState(null);
+  const [form, setForm] = useState({
+    name: "",
+    unit: "kg",
+    qty: "",
+    minQty: "",
+    buyPrice: "",
+    supplier: "",
+  });
+  const [restockForm, setRestockForm] = useState({
+    qty: "",
+    price: "",
+    supplier: "",
+  });
+  const [err, setErr] = useState({});
+
+  const refresh = () => setItems(InventoryDB.load());
+
+  const resetForm = () => {
+    setForm({
+      name: "",
+      unit: "kg",
+      qty: "",
+      minQty: "",
+      buyPrice: "",
+      supplier: "",
+    });
+    setErr({});
+  };
+
+  const validateForm = () => {
+    const e = {};
+    if (!form.name.trim()) e.name = "Nom requis";
+    if (isNaN(parseFloat(form.qty)) || parseFloat(form.qty) < 0)
+      e.qty = "Quantité invalide";
+    if (isNaN(parseFloat(form.buyPrice)) || parseFloat(form.buyPrice) < 0)
+      e.buyPrice = "Prix invalide";
+    return e;
+  };
+
+  const handleAdd = () => {
+    const e = validateForm();
+    if (Object.keys(e).length) {
+      setErr(e);
+      return;
+    }
+    if (editId) {
+      InventoryDB.update(editId, {
+        name: form.name.trim(),
+        unit: form.unit,
+        qty: parseFloat(form.qty),
+        minQty: parseFloat(form.minQty) || 0,
+        buyPrice: parseFloat(form.buyPrice),
+        supplier: form.supplier.trim(),
+      });
+    } else {
+      InventoryDB.add({
+        name: form.name.trim(),
+        unit: form.unit,
+        qty: parseFloat(form.qty),
+        minQty: parseFloat(form.minQty) || 0,
+        buyPrice: parseFloat(form.buyPrice),
+        supplier: form.supplier.trim(),
+        lastBought: parseFloat(form.qty) > 0 ? Date.now() : null,
+      });
+    }
+    refresh();
+    setTab("list");
+    setEditId(null);
+    resetForm();
+  };
+
+  const handleRestock = () => {
+    const e = {};
+    if (isNaN(parseFloat(restockForm.qty)) || parseFloat(restockForm.qty) <= 0)
+      e.qty = "Quantité invalide";
+    if (
+      isNaN(parseFloat(restockForm.price)) ||
+      parseFloat(restockForm.price) < 0
+    )
+      e.price = "Prix invalide";
+    if (Object.keys(e).length) {
+      setErr(e);
+      return;
+    }
+    InventoryDB.restock(
+      selectedId,
+      parseFloat(restockForm.qty),
+      parseFloat(restockForm.price),
+      restockForm.supplier,
+    );
+    refresh();
+    setRestockForm({ qty: "", price: "", supplier: "" });
+    setTab("list");
+    setSelectedId(null);
+    setErr({});
+  };
+
+  const startEdit = (it) => {
+    setEditId(it.id);
+    setForm({
+      name: it.name,
+      unit: it.unit,
+      qty: String(it.qty),
+      minQty: String(it.minQty || ""),
+      buyPrice: String(it.buyPrice),
+      supplier: it.supplier || "",
+    });
+    setErr({});
+    setTab("add");
+  };
+
+  const selected = items.find((it) => it.id === selectedId);
+
+  // KPIs
+  const totalValue = items.reduce(
+    (s, it) => s + (it.qty * it.buyPrice || 0),
+    0,
+  );
+  const lowStock = items.filter((it) => it.minQty > 0 && it.qty <= it.minQty);
+
+  const filtered = items.filter(
+    (it) =>
+      !filter ||
+      it.name.toLowerCase().includes(filter.toLowerCase()) ||
+      (it.supplier || "").toLowerCase().includes(filter.toLowerCase()),
+  );
+
+  const inp = (hasErr) =>
+    `w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none transition-colors ${hasErr ? th.inputErr(dark) : th.input(dark)}`;
+  const btn =
+    "px-3 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all";
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`font-bold ${th.text(dark)}`}>📦 Inventaire</h3>
+        <div className="flex gap-2">
+          {tab !== "add" && (
+            <button
+              onClick={() => {
+                setTab("add");
+                setEditId(null);
+                resetForm();
+              }}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-xl active:scale-95"
+            >
+              + Ajouter
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        <div className={`rounded-xl border p-3 ${th.border(dark)}`}>
+          <p className={`text-[10px] uppercase font-bold ${th.textSub(dark)}`}>
+            Articles
+          </p>
+          <p className={`text-lg font-bold ${th.text(dark)}`}>{items.length}</p>
+        </div>
+        <div className={`rounded-xl border p-3 ${th.border(dark)}`}>
+          <p className={`text-[10px] uppercase font-bold ${th.textSub(dark)}`}>
+            Valeur stock
+          </p>
+          <p className={`text-lg font-bold ${th.text(dark)}`}>
+            {totalValue.toFixed(0)} €
+          </p>
+        </div>
+        <div
+          className={`rounded-xl border p-3 ${lowStock.length > 0 ? "border-red-500 bg-red-500/10" : th.border(dark)}`}
+        >
+          <p
+            className={`text-[10px] uppercase font-bold ${lowStock.length > 0 ? "text-red-500" : th.textSub(dark)}`}
+          >
+            ⚠️ Stock bas
+          </p>
+          <p
+            className={`text-lg font-bold ${lowStock.length > 0 ? "text-red-500" : th.text(dark)}`}
+          >
+            {lowStock.length}
+          </p>
+        </div>
+      </div>
+
+      {/* Onglets */}
+      <div className="flex gap-2 mb-4 overflow-x-auto">
+        {[
+          { id: "list", label: "📋 Liste" },
+          { id: "add", label: editId ? "✏️ Modifier" : "➕ Ajouter" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 transition-all ${tab === t.id ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Formulaire ajout / modif */}
+      {tab === "add" && (
+        <div
+          className={`rounded-2xl border p-4 mb-4 space-y-3 ${th.border(dark)}`}
+        >
+          <div className="grid grid-cols-2 gap-3">
+            <div className="col-span-2">
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Nom de l'article *
+              </label>
+              <input
+                value={form.name}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, name: e.target.value }))
+                }
+                placeholder="Ex : Farine T55"
+                className={`${inp(err.name)} mt-1`}
+              />
+              {err.name && (
+                <p className="text-red-500 text-xs mt-1">{err.name}</p>
+              )}
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Unité
+              </label>
+              <select
+                value={form.unit}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, unit: e.target.value }))
+                }
+                className={`w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none mt-1 ${th.select(dark)}`}
+              >
+                {UNITS.map((u) => (
+                  <option key={u} value={u}>
+                    {u}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Quantité *
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.qty}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, qty: e.target.value }))
+                }
+                placeholder="0"
+                className={`${inp(err.qty)} mt-1`}
+              />
+              {err.qty && (
+                <p className="text-red-500 text-xs mt-1">{err.qty}</p>
+              )}
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Seuil alerte (min)
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.1"
+                value={form.minQty}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, minQty: e.target.value }))
+                }
+                placeholder="0"
+                className={`${inp(false)} mt-1`}
+              />
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Prix achat (€) *
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={form.buyPrice}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, buyPrice: e.target.value }))
+                }
+                placeholder="0.00"
+                className={`${inp(err.buyPrice)} mt-1`}
+              />
+              {err.buyPrice && (
+                <p className="text-red-500 text-xs mt-1">{err.buyPrice}</p>
+              )}
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Fournisseur
+              </label>
+              <input
+                value={form.supplier}
+                onChange={(e) =>
+                  setForm((p) => ({ ...p, supplier: e.target.value }))
+                }
+                placeholder="Ex : Metro"
+                className={`${inp(false)} mt-1`}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2 pt-1">
+            <button
+              onClick={handleAdd}
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95"
+            >
+              {editId ? "✅ Enregistrer" : "➕ Ajouter"}
+            </button>
+            <button
+              onClick={() => {
+                setTab("list");
+                setEditId(null);
+                resetForm();
+              }}
+              className={`px-4 py-2.5 rounded-xl text-sm font-bold active:scale-95 ${th.btnGhost(dark)}`}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Réapprovisionnement */}
+      {tab === "restock" && selected && (
+        <div
+          className={`rounded-2xl border p-4 mb-4 space-y-3 ${th.border(dark)}`}
+        >
+          <p className={`font-bold text-sm ${th.text(dark)}`}>
+            🔄 Réappro : {selected.name}
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Quantité reçue *
+              </label>
+              <input
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={restockForm.qty}
+                onChange={(e) =>
+                  setRestockForm((p) => ({ ...p, qty: e.target.value }))
+                }
+                placeholder="0"
+                className={`${inp(err.qty)} mt-1`}
+              />
+              {err.qty && (
+                <p className="text-red-500 text-xs mt-1">{err.qty}</p>
+              )}
+            </div>
+            <div>
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Prix achat (€) *
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={restockForm.price}
+                onChange={(e) =>
+                  setRestockForm((p) => ({ ...p, price: e.target.value }))
+                }
+                placeholder="0.00"
+                className={`${inp(err.price)} mt-1`}
+              />
+              {err.price && (
+                <p className="text-red-500 text-xs mt-1">{err.price}</p>
+              )}
+            </div>
+            <div className="col-span-2">
+              <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+                Fournisseur
+              </label>
+              <input
+                value={restockForm.supplier}
+                onChange={(e) =>
+                  setRestockForm((p) => ({ ...p, supplier: e.target.value }))
+                }
+                placeholder={selected.supplier || "Fournisseur"}
+                className={`${inp(false)} mt-1`}
+              />
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleRestock}
+              className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95"
+            >
+              ✅ Enregistrer le réapprovisionnement
+            </button>
+            <button
+              onClick={() => {
+                setTab("list");
+                setSelectedId(null);
+                setErr({});
+              }}
+              className={`px-4 py-2.5 rounded-xl text-sm font-bold active:scale-95 ${th.btnGhost(dark)}`}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Historique */}
+      {tab === "history" && selected && (
+        <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
+          <div className="flex items-center justify-between mb-3">
+            <p className={`font-bold text-sm ${th.text(dark)}`}>
+              📅 Historique : {selected.name}
+            </p>
+            <button
+              onClick={() => {
+                setTab("list");
+                setSelectedId(null);
+              }}
+              className={`text-xs font-semibold active:scale-95 ${dark ? "text-emerald-400" : "text-emerald-700"}`}
+            >
+              ← Retour
+            </button>
+          </div>
+          {!selected.history || selected.history.length === 0 ? (
+            <p className={`text-sm italic ${th.textSub(dark)}`}>
+              Aucun historique
+            </p>
+          ) : (
+            <div
+              className={`rounded-xl divide-y ${th.divider(dark)} max-h-60 overflow-y-auto`}
+            >
+              {selected.history.map((h, i) => (
+                <div
+                  key={i}
+                  className="py-2.5 flex items-center justify-between gap-3"
+                >
+                  <div>
+                    <p className={`text-xs font-semibold ${th.text(dark)}`}>
+                      +{h.qty} {selected.unit}
+                    </p>
+                    <p className={`text-[11px] ${th.textSub(dark)}`}>
+                      {h.supplier || "—"} ·{" "}
+                      {new Date(h.date).toLocaleDateString("fr-FR")}
+                    </p>
+                  </div>
+                  <span className={`text-xs font-bold ${th.text(dark)}`}>
+                    {Number(h.price).toFixed(2)} €
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Liste articles */}
+      {tab === "list" && (
+        <>
+          <input
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="🔍 Rechercher un article ou fournisseur…"
+            className={`w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none mb-3 ${th.input(dark)}`}
+          />
+          {filtered.length === 0 ? (
+            <p
+              className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}
+            >
+              {items.length === 0
+                ? "Aucun article. Commencez par en ajouter un."
+                : "Aucun résultat."}
+            </p>
+          ) : (
+            <div
+              className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+            >
+              {filtered.map((it) => {
+                const isLow = it.minQty > 0 && it.qty <= it.minQty;
+                const totalVal = (it.qty * it.buyPrice).toFixed(2);
+                return (
+                  <div key={it.id} className="px-4 py-3">
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p
+                            className={`font-bold text-sm truncate ${th.text(dark)}`}
+                          >
+                            {it.name}
+                          </p>
+                          {isLow && (
+                            <span className="bg-red-500 text-white text-[9px] font-black px-1.5 py-0.5 rounded-full shrink-0">
+                              ⚠️ BAS
+                            </span>
+                          )}
+                        </div>
+                        <p className={`text-xs ${th.textSub(dark)}`}>
+                          {it.supplier || "—"} · Acheté {it.buyPrice.toFixed(2)}{" "}
+                          €/{it.unit}
+                        </p>
+                        {it.lastBought && (
+                          <p className={`text-[11px] ${th.textSub(dark)}`}>
+                            Dernier réapro :{" "}
+                            {new Date(it.lastBought).toLocaleDateString(
+                              "fr-FR",
+                            )}
+                          </p>
+                        )}
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p
+                          className={`font-bold text-sm ${isLow ? "text-red-500" : th.text(dark)}`}
+                        >
+                          {it.qty} {it.unit}
+                        </p>
+                        <p className={`text-xs ${th.textSub(dark)}`}>
+                          {totalVal} €
+                        </p>
+                        {it.minQty > 0 && (
+                          <p className={`text-[10px] ${th.textSub(dark)}`}>
+                            min: {it.minQty} {it.unit}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex gap-1.5 mt-2 flex-wrap">
+                      <button
+                        onClick={() => {
+                          setSelectedId(it.id);
+                          setRestockForm({
+                            qty: "",
+                            price: String(it.buyPrice),
+                            supplier: it.supplier || "",
+                          });
+                          setTab("restock");
+                          setErr({});
+                        }}
+                        className={`${btn} bg-blue-600 hover:bg-blue-700 text-white`}
+                      >
+                        🔄 Réappro
+                      </button>
+                      <button
+                        onClick={() => {
+                          setSelectedId(it.id);
+                          setTab("history");
+                        }}
+                        className={`${btn} border ${th.btnGhost(dark)}`}
+                      >
+                        📅 Historique
+                      </button>
+                      <button
+                        onClick={() => startEdit(it)}
+                        className={`${btn} border ${th.btnGhost(dark)}`}
+                      >
+                        ✏️ Modifier
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (window.confirm(`Supprimer "${it.name}" ?`)) {
+                            InventoryDB.remove(it.id);
+                            refresh();
+                          }
+                        }}
+                        className={`${btn} border border-red-400/40 text-red-500 hover:bg-red-50`}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   PRICES PANEL - édition admin de tous les prix
+═══════════════════════════════════════════════════ */
+function PricesPanel({ dark }) {
+  const [prices, setPrices] = useState(() => PricesDB.load());
+  const [saved, setSaved] = useState(false);
+
+  const save = (next) => {
+    PricesDB.save(next);
+    setPrices(next);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const setPizzaPrice = (id, size, val) => {
+    const next = {
+      ...prices,
+      pizzas: {
+        ...(prices.pizzas || {}),
+        [id]: { ...(prices.pizzas?.[id] || {}), [size]: parseFloat(val) || 0 },
+      },
+    };
+    save(next);
+  };
+  const setDrinkPrice = (id, val) => {
+    const next = {
+      ...prices,
+      drinks: { ...(prices.drinks || {}), [id]: parseFloat(val) || 0 },
+    };
+    save(next);
+  };
+  const setExtraPrice = (val) =>
+    save({ ...prices, extras: parseFloat(val) || 2 });
+  const setDeliveryFee = (val) =>
+    save({ ...prices, delivery: parseFloat(val) || 0 });
+
+  const priceInput = (value, onChange) => (
+    <input
+      type="number"
+      min="0"
+      step="0.1"
+      defaultValue={value}
+      onBlur={(e) => onChange(e.target.value)}
+      className={`w-20 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
+    />
+  );
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`font-bold ${th.text(dark)}`}>💶 Gestion des prix</h3>
+        {saved && (
+          <span className="text-xs text-emerald-500 font-bold">
+            ✅ Sauvegardé
+          </span>
+        )}
+      </div>
+
+      {/* Frais globaux */}
+      <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
+        <p
+          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
+        >
+          Tarifs globaux
+        </p>
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className={`text-sm font-semibold ${th.text(dark)}`}>
+                Supplément (par extra)
+              </p>
+              <p className={`text-xs ${th.textSub(dark)}`}>
+                Mozzarella, Poulet, etc.
+              </p>
+            </div>
+            {priceInput(prices.extras ?? 2, setExtraPrice)}
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className={`text-sm font-semibold ${th.text(dark)}`}>
+                Livraison sans pizza
+              </p>
+              <p className={`text-xs ${th.textSub(dark)}`}>
+                Commande boissons uniquement
+              </p>
+            </div>
+            {priceInput(prices.delivery ?? 2, setDeliveryFee)}
+          </div>
+        </div>
+      </div>
+
+      {/* Prix pizzas */}
+      <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
+        <p
+          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
+        >
+          Pizzas
+        </p>
+        <div className="space-y-2">
+          <div className="grid grid-cols-4 gap-2 mb-2">
+            <span
+              className={`text-[10px] font-bold ${th.textSub(dark)}`}
+            ></span>
+            {["Ø26", "Ø29", "Ø33"].map((s) => (
+              <span
+                key={s}
+                className={`text-[10px] font-bold text-center ${th.textSub(dark)}`}
+              >
+                {s}
+              </span>
+            ))}
+          </div>
+          {PIZZAS.map((p) => (
+            <div
+              key={p.id}
+              className={`grid grid-cols-4 gap-2 items-center py-1 border-t ${th.border(dark)}`}
+            >
+              <span
+                className={`text-xs font-semibold truncate ${th.text(dark)}`}
+              >
+                {p.name}
+              </span>
+              {[
+                ["small", "Ø26"],
+                ["medium", "Ø29"],
+                ["large", "Ø33"],
+              ].map(([size]) => (
+                <div key={size} className="flex justify-center">
+                  {priceInput(
+                    prices?.pizzas?.[p.id]?.[size] ?? p.prices[size],
+                    (val) => setPizzaPrice(p.id, size, val),
+                  )}
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Prix boissons */}
+      <div className={`rounded-2xl border p-4 ${th.border(dark)}`}>
+        <p
+          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
+        >
+          Boissons
+        </p>
+        <div className="space-y-2">
+          {DRINKS.map((d) => (
+            <div
+              key={d.id}
+              className={`flex items-center justify-between py-1.5 border-t ${th.border(dark)}`}
+            >
+              <div>
+                <p className={`text-xs font-semibold ${th.text(dark)}`}>
+                  {d.name}
+                </p>
+                <p className={`text-[10px] ${th.textSub(dark)}`}>
+                  {d.category}
+                </p>
+              </div>
+              {priceInput(prices?.drinks?.[d.id] ?? d.price, (val) =>
+                setDrinkPrice(d.id, val),
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <p className={`text-xs mt-3 ${th.textSub(dark)}`}>
+        💡 Les prix modifiés s'appliquent immédiatement au menu et au panier.
+        Les offres actives s'appliquent en plus.
+      </p>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   OFFERS PANEL - offres admin automatiques
+═══════════════════════════════════════════════════ */
+const OFFER_TYPES = [
+  { id: "pct", label: "−% sur articles ciblés", icon: "%" },
+  { id: "fixed", label: "−€ montant fixe", icon: "€" },
+  { id: "2for1", label: "2 pour 1", icon: "2×1" },
+  { id: "free_drink", label: "Boisson offerte avec une pizza", icon: "🥤" },
+  { id: "fixed_price", label: "Prix fixe temporaire", icon: "🏷️" },
+];
+
+const SIZE_LABELS = { large: "Ø33", medium: "Ø29", small: "Ø26" };
+const ALL_SIZES = ["large", "medium", "small"];
+
+const emptyOffer = () => ({
+  label: "",
+  type: "pct",
+  value: "",
+  scope: "all", // all | pizza | drink
+  pizzaIds: [], // [] = toutes
+  sizes: [], // [] = toutes
+  drinkIds: [], // [] = toutes
+  validFrom: "",
+  validTo: "",
+  maxUses: "",
+});
+
+function OfferForm({ initial, onSave, onCancel, dark }) {
+  const [form, setForm] = useState(initial || emptyOffer());
+  const [err, setErr] = useState({});
+
+  const f = (key, val) => setForm((p) => ({ ...p, [key]: val }));
+
+  const toggleArr = (key, val) =>
+    setForm((p) => ({
+      ...p,
+      [key]: p[key].includes(val)
+        ? p[key].filter((x) => x !== val)
+        : [...p[key], val],
+    }));
+
+  const validate = () => {
+    const e = {};
+    if (!form.label.trim()) e.label = "Libellé requis";
+    if (form.type !== "2for1" && form.type !== "free_drink") {
+      if (
+        !form.value ||
+        isNaN(parseFloat(form.value)) ||
+        parseFloat(form.value) <= 0
+      )
+        e.value = "Valeur requise";
+    }
+    return e;
+  };
+
+  const handleSave = () => {
+    const e = validate();
+    if (Object.keys(e).length) {
+      setErr(e);
+      return;
+    }
+    const target = {
+      scope: form.scope,
+      pizzaIds: form.pizzaIds,
+      sizes: form.sizes,
+      drinkIds: form.drinkIds,
+    };
+    onSave({
+      label: form.label.trim(),
+      type: form.type,
+      value: parseFloat(form.value) || 0,
+      target,
+      validFrom: form.validFrom ? new Date(form.validFrom).getTime() : null,
+      validTo: form.validTo ? new Date(form.validTo).getTime() : null,
+      maxUses: parseInt(form.maxUses) || null,
+    });
+  };
+
+  const inp = (hasErr) =>
+    `w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none transition-colors ${hasErr ? th.inputErr(dark) : th.input(dark)}`;
+  const chip = (active) =>
+    `px-2.5 py-1 rounded-lg text-xs font-bold border-2 cursor-pointer transition-all active:scale-95 ${active ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`;
+
+  return (
+    <div className={`rounded-2xl border p-4 space-y-4 ${th.border(dark)}`}>
+      {/* Libellé */}
+      <div>
+        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+          Libellé de l'offre *
+        </label>
+        <input
+          value={form.label}
+          onChange={(e) => f("label", e.target.value)}
+          placeholder="Ex : Happy Hour Ø33"
+          className={`${inp(err.label)} mt-1`}
+        />
+        {err.label && <p className="text-red-500 text-xs mt-1">{err.label}</p>}
+      </div>
+
+      {/* Type */}
+      <div>
+        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+          Type d'offre
+        </label>
+        <div className="flex flex-wrap gap-2 mt-2">
+          {OFFER_TYPES.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => f("type", t.id)}
+              className={`${chip(form.type === t.id)} text-xs`}
+            >
+              {t.icon} {t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Valeur */}
+      {form.type !== "2for1" && form.type !== "free_drink" && (
+        <div>
+          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+            {form.type === "pct"
+              ? "Remise (%)"
+              : form.type === "fixed"
+                ? "Remise (€)"
+                : "Prix fixe (€)"}{" "}
+            *
+          </label>
+          <input
+            type="number"
+            min="0"
+            step="0.1"
+            value={form.value}
+            onChange={(e) => f("value", e.target.value)}
+            placeholder={form.type === "pct" ? "Ex : 20" : "Ex : 2.00"}
+            className={`${inp(err.value)} mt-1`}
+          />
+          {err.value && (
+            <p className="text-red-500 text-xs mt-1">{err.value}</p>
+          )}
+        </div>
+      )}
+
+      {/* Portée */}
+      <div>
+        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+          Portée
+        </label>
+        <div className="flex gap-2 mt-2">
+          {[
+            { id: "all", label: "Tous" },
+            { id: "pizza", label: "Pizzas" },
+            { id: "drink", label: "Boissons" },
+          ].map((s) => (
+            <button
+              key={s.id}
+              onClick={() => f("scope", s.id)}
+              className={chip(form.scope === s.id)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Sélection pizzas */}
+      {(form.scope === "pizza" || form.scope === "all") &&
+        form.type !== "free_drink" && (
+          <div>
+            <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+              Pizzas ciblées{" "}
+              <span className={`font-normal ${th.textSub(dark)}`}>
+                (vide = toutes)
+              </span>
+            </label>
+            <div className="flex flex-wrap gap-1.5 mt-2 max-h-32 overflow-y-auto">
+              {PIZZAS.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => toggleArr("pizzaIds", p.id)}
+                  className={chip(form.pizzaIds.includes(p.id))}
+                >
+                  {p.name}
+                </button>
+              ))}
+            </div>
+            <label
+              className={`text-xs font-semibold mt-3 block ${th.textSub(dark)}`}
+            >
+              Tailles ciblées{" "}
+              <span className={`font-normal ${th.textSub(dark)}`}>
+                (vide = toutes)
+              </span>
+            </label>
+            <div className="flex gap-2 mt-2">
+              {ALL_SIZES.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => toggleArr("sizes", s)}
+                  className={chip(form.sizes.includes(s))}
+                >
+                  {SIZE_LABELS[s]}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+      {/* Sélection boissons */}
+      {(form.scope === "drink" || form.type === "free_drink") && (
+        <div>
+          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+            Boissons ciblées{" "}
+            <span className={`font-normal ${th.textSub(dark)}`}>
+              (vide = toutes)
+            </span>
+          </label>
+          <div className="flex flex-wrap gap-1.5 mt-2 max-h-32 overflow-y-auto">
+            {DRINKS.map((d) => (
+              <button
+                key={d.id}
+                onClick={() => toggleArr("drinkIds", d.id)}
+                className={chip(form.drinkIds.includes(d.id))}
+              >
+                {d.name}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Validité */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+            Valide du
+          </label>
+          <input
+            type="datetime-local"
+            value={form.validFrom}
+            onChange={(e) => f("validFrom", e.target.value)}
+            className={`${inp(false)} mt-1`}
+          />
+        </div>
+        <div>
+          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+            Au
+          </label>
+          <input
+            type="datetime-local"
+            value={form.validTo}
+            onChange={(e) => f("validTo", e.target.value)}
+            className={`${inp(false)} mt-1`}
+          />
+        </div>
+      </div>
+      <div>
+        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
+          Plafond d'usages (laisser vide = illimité)
+        </label>
+        <input
+          type="number"
+          min="1"
+          step="1"
+          value={form.maxUses}
+          onChange={(e) => f("maxUses", e.target.value)}
+          placeholder="Ex : 50"
+          className={`${inp(false)} mt-1`}
+        />
+      </div>
+
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={handleSave}
+          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95"
+        >
+          ✅ Enregistrer
+        </button>
+        <button
+          onClick={onCancel}
+          className={`px-4 py-2.5 rounded-xl text-sm font-bold active:scale-95 ${th.btnGhost(dark)}`}
+        >
+          Annuler
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function OffersPanel({ dark }) {
+  const [offers, setOffers] = useState(() => OffersDB.load());
+  const [adding, setAdding] = useState(false);
+  const [editId, setEditId] = useState(null);
+
+  const refresh = () => setOffers(OffersDB.load());
+
+  const handleAdd = (data) => {
+    OffersDB.add(data);
+    refresh();
+    setAdding(false);
+  };
+
+  const handleEdit = (data) => {
+    OffersDB.update(editId, data);
+    refresh();
+    setEditId(null);
+  };
+
+  const toggle = (id, active) => {
+    OffersDB.update(id, { active });
+    refresh();
+  };
+  const remove = (id) => {
+    if (window.confirm("Supprimer cette offre ?")) {
+      OffersDB.remove(id);
+      refresh();
+    }
+  };
+
+  const now = Date.now();
+  const isExpired = (o) => o.validTo && now > o.validTo;
+  const isPending = (o) => o.validFrom && now < o.validFrom;
+
+  const describeTarget = (o) => {
+    const parts = [];
+    const t = o.target || {};
+    if (t.scope === "all") parts.push("Tous articles");
+    else if (t.scope === "pizza") {
+      const names = t.pizzaIds?.length
+        ? t.pizzaIds
+            .map((id) => PIZZAS.find((p) => p.id === id)?.name || id)
+            .join(", ")
+        : "Toutes pizzas";
+      const sizes = t.sizes?.length
+        ? t.sizes.map((s) => SIZE_LABELS[s]).join("+")
+        : "toutes tailles";
+      parts.push(`${names} · ${sizes}`);
+    } else if (t.scope === "drink") {
+      const names = t.drinkIds?.length
+        ? t.drinkIds
+            .map((id) => DRINKS.find((d) => d.id === id)?.name || id)
+            .join(", ")
+        : "Toutes boissons";
+      parts.push(names);
+    }
+    return parts.join(" · ");
+  };
+
+  const describeValue = (o) => {
+    if (o.type === "pct") return `-${o.value}%`;
+    if (o.type === "fixed") return `-${o.value.toFixed(2)}€`;
+    if (o.type === "2for1") return "2 pour 1";
+    if (o.type === "free_drink") return "Boisson offerte";
+    if (o.type === "fixed_price") return `Prix fixe ${o.value.toFixed(2)}€`;
+    return "";
+  };
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`font-bold ${th.text(dark)}`}>
+          🎁 Offres promotionnelles
+        </h3>
+        {!adding && !editId && (
+          <button
+            onClick={() => setAdding(true)}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-xl active:scale-95"
+          >
+            + Créer une offre
+          </button>
+        )}
+      </div>
+
+      {adding && (
+        <div className="mb-4">
+          <p className={`text-sm font-bold mb-3 ${th.text(dark)}`}>
+            Nouvelle offre
+          </p>
+          <OfferForm
+            dark={dark}
+            onSave={handleAdd}
+            onCancel={() => setAdding(false)}
+          />
+        </div>
+      )}
+
+      {offers.length === 0 && !adding ? (
+        <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+          Aucune offre créée.
+        </p>
+      ) : (
+        <div
+          className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+        >
+          {offers.map((o) => {
+            const expired = isExpired(o);
+            const pending = isPending(o);
+            const statusLabel = !o.active
+              ? "⏸ Pausée"
+              : expired
+                ? "❌ Expirée"
+                : pending
+                  ? "⏳ À venir"
+                  : "✅ Active";
+            const statusColor = !o.active
+              ? "text-zinc-400"
+              : expired
+                ? "text-red-500"
+                : pending
+                  ? "text-amber-500"
+                  : "text-emerald-500";
+
+            if (editId === o.id) {
+              return (
+                <div key={o.id} className="p-4">
+                  <OfferForm
+                    dark={dark}
+                    initial={{
+                      label: o.label,
+                      type: o.type,
+                      value: String(o.value || ""),
+                      scope: o.target?.scope || "all",
+                      pizzaIds: o.target?.pizzaIds || [],
+                      sizes: o.target?.sizes || [],
+                      drinkIds: o.target?.drinkIds || [],
+                      validFrom: o.validFrom
+                        ? new Date(o.validFrom).toISOString().slice(0, 16)
+                        : "",
+                      validTo: o.validTo
+                        ? new Date(o.validTo).toISOString().slice(0, 16)
+                        : "",
+                      maxUses: o.maxUses ? String(o.maxUses) : "",
+                    }}
+                    onSave={handleEdit}
+                    onCancel={() => setEditId(null)}
+                  />
+                </div>
+              );
+            }
+
+            return (
+              <div key={o.id} className="px-4 py-3">
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className={`font-bold text-sm ${th.text(dark)}`}>
+                        {o.label}
+                      </p>
+                      <span
+                        className={`text-xs font-bold px-2 py-0.5 rounded-full border ${o.active && !expired && !pending ? "bg-emerald-500/10 border-emerald-500/30" : "border-zinc-500/20"} ${statusColor}`}
+                      >
+                        {statusLabel}
+                      </span>
+                      <span className="text-xs bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full">
+                        {describeValue(o)}
+                      </span>
+                    </div>
+                    <p className={`text-xs mt-1 ${th.textSub(dark)}`}>
+                      {describeTarget(o)}
+                    </p>
+                    <p className={`text-[11px] mt-0.5 ${th.textSub(dark)}`}>
+                      {o.validFrom
+                        ? `Du ${new Date(o.validFrom).toLocaleDateString("fr-FR")}`
+                        : "Dès maintenant"}
+                      {o.validTo
+                        ? ` au ${new Date(o.validTo).toLocaleDateString("fr-FR")}`
+                        : " · Sans limite"}
+                      {o.maxUses
+                        ? ` · Max ${o.maxUses} usages (${o.usedCount || 0} utilisés)`
+                        : ""}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-1.5 mt-2 flex-wrap">
+                  <button
+                    onClick={() => toggle(o.id, !o.active)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${o.active ? "border-amber-400/40 text-amber-500 hover:bg-amber-50" : "bg-emerald-600 text-white border-emerald-600"}`}
+                  >
+                    {o.active ? "⏸ Pauser" : "▶ Activer"}
+                  </button>
+                  <button
+                    onClick={() => setEditId(o.id)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${th.btnGhost(dark)}`}
+                  >
+                    ✏️ Modifier
+                  </button>
+                  <button
+                    onClick={() => remove(o.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold border-2 border-red-400/40 text-red-500 hover:bg-red-50 active:scale-95"
+                  >
+                    🗑️ Supprimer
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <p className={`text-xs mt-3 ${th.textSub(dark)}`}>
+        💡 Les offres automatiques s'appliquent au panier sans code. Coexistent
+        avec les codes promo clients.
+      </p>
+    </div>
+  );
+}
+
 /* ═══════════════════════════════════════════════════
    ADMIN VIEW - Dashboard
 ═══════════════════════════════════════════════════ */
@@ -5833,6 +7308,9 @@ function AdminView({ onBack, dark }) {
         </span>
       </div>
       <AccessManager dark={dark} />
+      <PricesPanel dark={dark} />
+      <OffersPanel dark={dark} />
+      <InventoryPanel dark={dark} />
       <IncidentsPanel dark={dark} />
       <OrdersOverviewPanel dark={dark} />
       <ExportPanel dark={dark} />
@@ -7948,6 +9426,8 @@ export default function HousePizza() {
   const {
     totalRaw,
     total,
+    offerDiscount,
+    offerLabel,
     pizzaCount,
     deliveryFee,
     hasPizza,
@@ -7957,21 +9437,109 @@ export default function HousePizza() {
     const totalRaw = cart.reduce((s, i) => s + i.price, 0);
     const pizzasOnly = cart.filter((i) => i.type === "pizza");
     const hasPizza = pizzasOnly.length > 0;
+
+    // ── Application des offres automatiques ──
+    let offerDiscount = 0;
+    let offerLabel = "";
+    const activeOffers = OffersDB.active();
+
+    for (const offer of activeOffers) {
+      const t = offer.target || {};
+      const matchesPizza = (item) => {
+        if (item.type !== "pizza") return false;
+        if (
+          t.pizzaIds?.length &&
+          !t.pizzaIds.includes(PIZZAS.find((p) => p.name === item.name)?.id)
+        )
+          return false;
+        if (t.sizes?.length && !t.sizes.includes(item.size)) return false;
+        return true;
+      };
+      const matchesDrink = (item) => {
+        if (item.type !== "drink") return false;
+        if (
+          t.drinkIds?.length &&
+          !t.drinkIds.includes(DRINKS.find((d) => d.name === item.name)?.id)
+        )
+          return false;
+        return true;
+      };
+      const matchesItem = (item) => {
+        if (t.scope === "all") return true;
+        if (t.scope === "pizza") return matchesPizza(item);
+        if (t.scope === "drink") return matchesDrink(item);
+        return false;
+      };
+      const targeted = cart.filter(matchesItem);
+      if (targeted.length === 0) continue;
+
+      if (offer.type === "pct") {
+        const sub = targeted.reduce((s, i) => s + i.price, 0);
+        const disc = Math.round(sub * offer.value) / 100;
+        if (disc > offerDiscount) {
+          offerDiscount = disc;
+          offerLabel = offer.label;
+        }
+      } else if (offer.type === "fixed") {
+        if (offer.value > offerDiscount) {
+          offerDiscount = offer.value;
+          offerLabel = offer.label;
+        }
+      } else if (offer.type === "2for1") {
+        if (targeted.length >= 2) {
+          const cheapest = Math.min(...targeted.map((i) => i.price));
+          if (cheapest > offerDiscount) {
+            offerDiscount = cheapest;
+            offerLabel = offer.label;
+          }
+        }
+      } else if (offer.type === "free_drink") {
+        if (hasPizza) {
+          const drinks = cart.filter(
+            (i) =>
+              i.type === "drink" &&
+              (t.drinkIds?.length === 0 ||
+                t.drinkIds?.includes(
+                  DRINKS.find((d) => d.name === i.name)?.id,
+                )),
+          );
+          if (drinks.length > 0) {
+            const cheapestDrink = Math.min(...drinks.map((i) => i.price));
+            if (cheapestDrink > offerDiscount) {
+              offerDiscount = cheapestDrink;
+              offerLabel = offer.label;
+            }
+          }
+        }
+      } else if (offer.type === "fixed_price") {
+        targeted.forEach((item) => {
+          const diff = item.price - offer.value;
+          if (diff > 0 && diff > offerDiscount) {
+            offerDiscount = diff;
+            offerLabel = offer.label;
+          }
+        });
+      }
+    }
+    offerDiscount = Math.min(offerDiscount, totalRaw); // plafond
+
     const deliveryFee =
-      cart.length > 0 && !hasPizza ? NO_PIZZA_DELIVERY_FEE : DELIVERY_FEE;
-    const total = Math.max(0, totalRaw + deliveryFee);
+      cart.length > 0 && !hasPizza ? PricesDB.deliveryFee() : DELIVERY_FEE;
+    const total = Math.max(0, totalRaw - offerDiscount + deliveryFee);
     const canCheckout = totalRaw >= MIN_ORDER_AMOUNT;
     const missingForMin = Math.max(0, MIN_ORDER_AMOUNT - totalRaw);
     return {
       totalRaw,
       total,
+      offerDiscount,
+      offerLabel,
       pizzaCount: pizzasOnly.length,
       deliveryFee,
       hasPizza,
       canCheckout,
       missingForMin,
     };
-  }, [cart]);
+  }, [cart]); // ← cette ligne DOIT être présente
 
   const addPizza = useCallback(
     (pizza, size, crust, extras, price) => {
@@ -8521,6 +10089,8 @@ export default function HousePizza() {
           cart={cart}
           totalRaw={totalRaw}
           total={total}
+          offerDiscount={offerDiscount}
+          offerLabel={offerLabel}
           deliveryFee={deliveryFee}
           hasPizza={hasPizza}
           canCheckout={canCheckout}
