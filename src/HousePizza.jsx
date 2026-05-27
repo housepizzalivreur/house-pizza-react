@@ -423,6 +423,210 @@ const DRINKS = [
 ];
 
 const DELIVERY_FEE = 0;
+const NO_PIZZA_DELIVERY_FEE = 2;
+const MIN_ORDER_AMOUNT = 5;
+/* ═══════════════════════════════════════════════════
+   ROLES DB - habilitations dynamiques (admin / cashier / driver)
+   - Persistance : localStorage "hp_roles"
+   - Seed initial + protection : l'admin principal ne peut pas être supprimé
+═══════════════════════════════════════════════════ */
+const ROLES = ["admin", "cashier", "driver"];
+const ROLE_LABELS = {
+  admin: "👑 Admin",
+  cashier: "💼 Caissier",
+  driver: "🛵 Livreur",
+};
+const PROTECTED_ADMIN = "housepizzayy.976@gmail.com";
+const DEFAULT_ROLES = {
+  "housepizzayy.976@gmail.com": "admin",
+  "rachie.2@live.fr": "admin",
+  "housepizzacaisse@gmail.com": "cashier",
+  "housepizzalivreur@gmail.com": "driver",
+};
+
+const RolesDB = {
+  KEY: "hp_roles",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "null");
+      if (raw && typeof raw === "object") {
+        // Re-injecte admin principal s'il a été altéré
+        if (raw[PROTECTED_ADMIN] !== "admin") {
+          raw[PROTECTED_ADMIN] = "admin";
+          this._write(raw);
+        }
+        return raw;
+      }
+    } catch {}
+    this._write(DEFAULT_ROLES);
+    return { ...DEFAULT_ROLES };
+  },
+  _write(obj) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(obj));
+    } catch {}
+  },
+  get(email) {
+    if (!email) return null;
+    return this.load()[email.toLowerCase().trim()] || null;
+  },
+  set(email, role) {
+    const e = (email || "").toLowerCase().trim();
+    if (!e || !ROLES.includes(role))
+      return { ok: false, err: "Email ou rôle invalide" };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
+      return { ok: false, err: "Format email invalide" };
+    const map = this.load();
+    map[e] = role;
+    this._write(map);
+    return { ok: true };
+  },
+  remove(email) {
+    const e = (email || "").toLowerCase().trim();
+    if (e === PROTECTED_ADMIN)
+      return { ok: false, err: "Admin principal protégé" };
+    const map = this.load();
+    if (!map[e]) return { ok: false, err: "Email introuvable" };
+    delete map[e];
+    this._write(map);
+    return { ok: true };
+  },
+  list() {
+    return Object.entries(this.load())
+      .map(([email, role]) => ({ email, role }))
+      .sort(
+        (a, b) =>
+          ROLES.indexOf(a.role) - ROLES.indexOf(b.role) ||
+          a.email.localeCompare(b.email),
+      );
+  },
+};
+/* ═══════════════════════════════════════════════════
+   REX DB - Incidents commandes (immuable)
+   Schéma incident : { id, orderNumber, reason, customReason, comment,
+                       createdAt, createdBy, phone, address, total, orderType }
+   Stockage : localStorage "hp_rex"
+═══════════════════════════════════════════════════ */
+const REX_REASONS = [
+  { id: "unreachable", label: "Client injoignable / introuvable" },
+  { id: "noshow", label: "Client absent au retrait" },
+  { id: "order_error", label: "Erreur de commande" },
+  { id: "other", label: "Autre (préciser)" },
+];
+const REX_REASON_LABEL = (id) =>
+  REX_REASONS.find((r) => r.id === id)?.label || id;
+
+const RexDB = {
+  KEY: "hp_rex",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "[]");
+      return Array.isArray(raw) ? raw : [];
+    } catch {
+      return [];
+    }
+  },
+  _write(arr) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(arr.slice(0, 500)));
+    } catch {}
+  },
+  add(entry) {
+    // IMMUABLE : on ajoute, on ne modifie jamais
+    const list = this.load();
+    const record = {
+      id: `rex_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      createdAt: Date.now(),
+      ...entry,
+    };
+    list.unshift(record);
+    this._write(list);
+    return record;
+  },
+  list() {
+    return this.load();
+  },
+  byOrder(orderNumber) {
+    return this.load().find((r) => r.orderNumber === orderNumber) || null;
+  },
+};
+
+/* ═══════════════════════════════════════════════════
+   BLACKLIST DB - Calcul dynamique des risques clients
+   - 1 incident  = ⚠️ drapeau (avertissement)
+   - 2+ incidents = 🚫 blocage commande
+═══════════════════════════════════════════════════ */
+const normPhone = (p) =>
+  String(p || "")
+    .replace(/[^\d]/g, "")
+    .replace(/^0033/, "33")
+    .replace(/^33/, "262")
+    .trim();
+const normAddress = (a) =>
+  String(a || "")
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/[.,;]/g, "");
+
+const BlacklistDB = {
+  // Renvoie le nombre d'incidents pour un (phone, address)
+  countIncidents(phone, address) {
+    const rex = RexDB.load();
+    const np = normPhone(phone);
+    const na = normAddress(address);
+    if (!np && !na) return 0;
+    return rex.filter((r) => {
+      const matchPhone = np && normPhone(r.phone) === np;
+      const matchAddr = na && normAddress(r.address) === na;
+      return matchPhone || matchAddr;
+    }).length;
+  },
+  // 0 = clean, 1 = flagged, 2+ = blocked
+  riskLevel(phone, address) {
+    const c = this.countIncidents(phone, address);
+    if (c === 0) return 0;
+    if (c === 1) return 1;
+    return 2;
+  },
+  incidents(phone, address) {
+    const rex = RexDB.load();
+    const np = normPhone(phone);
+    const na = normAddress(address);
+    return rex.filter((r) => {
+      const matchPhone = np && normPhone(r.phone) === np;
+      const matchAddr = na && normAddress(r.address) === na;
+      return matchPhone || matchAddr;
+    });
+  },
+  // Regroupe les incidents par client (clé = phone normalisé)
+  byCustomer() {
+    const rex = RexDB.load();
+    const map = new Map();
+    for (const r of rex) {
+      const key = normPhone(r.phone) || normAddress(r.address);
+      if (!key) continue;
+      if (!map.has(key)) {
+        map.set(key, {
+          phone: r.phone,
+          address: r.address,
+          customer: r.customer,
+          count: 0,
+          incidents: [],
+        });
+      }
+      const e = map.get(key);
+      e.count++;
+      e.incidents.push(r);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  },
+};
+
+const getUserRole = (e) => RolesDB.get(e) || "customer";
+const isAdminEmail = (e) => getUserRole(e) === "admin";
+const isCashierEmail = (e) => getUserRole(e) === "cashier";
+const isDriverEmail = (e) => getUserRole(e) === "driver";
 // ─── PROMO MARGARITA (GELÉE - base pour futures offres) ───────────────────────
 // Offre : 2 pizzas achetées = 1 Margarita Ø33 offerte (-12€)
 // Pour réactiver : passer PROMO_PIZZA_ACTIVE à true
@@ -430,7 +634,6 @@ const PROMO_PIZZA_ACTIVE = false;
 const PROMO_EVERY = 2;
 const PROMO_PIZZA_VALUE = 12; // valeur de la Margarita Ø33 offerte
 // ──────────────────────────────────────────────────────────────────────────────
-
 // ─── CODES PROMO ─────────────────────────────────────────────────────────────
 // Format : XXXXX## (5 lettres + 2 chiffres) - les 2 chiffres = % de remise
 // usedBy : tableau de numéros de téléphone ayant déjà utilisé le code
@@ -530,13 +733,35 @@ const ALLOWED_VILLAGES = [
 ═══════════════════════════════════════════════════ */
 
 const ORDER_STATUS = [
-  "Commande reçue",
-  "En préparation",
-  "Prête",
-  "Prise en charge par le livreur",
-  "En livraison",
-  "Livrée",
+  "Commande prise en compte", // 0
+  "En préparation", // 1
+  "Prête", // 2
+  "Prise en charge livreur", // 3 (delivery)
+  "Livreur en route", // 4 (delivery)
+  "Livrée", // 5 (delivery final)
+  "Retirée", // 6 (takeaway final)
 ];
+
+// Métadonnées d'affichage par statut
+const STATUS_META = {
+  0: { emoji: "📥", color: "bg-zinc-500" },
+  1: { emoji: "👨‍🍳", color: "bg-amber-500" },
+  2: { emoji: "✅", color: "bg-emerald-500" },
+  3: { emoji: "📦", color: "bg-blue-500" },
+  4: { emoji: "🛵", color: "bg-blue-600" },
+  5: { emoji: "🎉", color: "bg-emerald-600" },
+  6: { emoji: "🎉", color: "bg-emerald-600" },
+};
+
+// Helper notif WhatsApp
+const sendWhatsApp = (number, message) => {
+  if (!number) return;
+  const clean = String(number).replace(/[^\d]/g, "");
+  window.open(
+    `https://wa.me/${clean}?text=${encodeURIComponent(message)}`,
+    "_blank",
+  );
+};
 
 /* Génère un numéro de commande format AAAAMMJJ001 */
 function generateOrderNumber() {
@@ -2663,7 +2888,7 @@ function PizzaModal({ pizza, onClose, onAdd, dark }) {
             >
               <span>✨</span>
               <span>
-                Exclusivité House Pizza — Ø26 à 9,90€ avec boisson offerte !
+                Exclusivité House Pizza - Ø26 à 9,90€ avec boisson offerte !
               </span>
             </div>
 
@@ -3136,6 +3361,10 @@ function CartView({
   onCheckout,
   onClearRequest,
   dark,
+  deliveryFee,
+  hasPizza,
+  canCheckout,
+  missingForMin,
 }) {
   return (
     <div className="max-w-2xl mx-auto px-4 pb-32 pt-6">
@@ -3215,10 +3444,23 @@ function CartView({
           <span>Sous-total</span>
           <span>{totalRaw.toFixed(2)}€</span>
         </div>
-        <div className="flex justify-between text-emerald-500 text-sm font-semibold">
+        <div
+          className={`flex justify-between text-sm font-semibold ${
+            deliveryFee > 0 ? "text-orange-500" : "text-emerald-500"
+          }`}
+        >
           <span>🛵 Livraison</span>
-          <span>OFFERTE</span>
+          <span>
+            {deliveryFee > 0 ? `${deliveryFee.toFixed(2)}€` : "OFFERTE"}
+          </span>
         </div>
+
+        {!hasPizza && cart.length > 0 && (
+          <p className={`text-xs ${th.textSub(dark)}`}>
+            💡 Ajoutez une pizza pour la livraison offerte
+          </p>
+        )}
+
         <div
           className={`border-t pt-3 flex justify-between text-xl font-bold ${th.border(dark)} ${th.text(dark)}`}
         >
@@ -3236,9 +3478,12 @@ function CartView({
         </button>
         <button
           onClick={onCheckout}
-          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all"
+          disabled={!canCheckout}
+          className={`flex-1 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all ${canCheckout ? "bg-emerald-600 hover:bg-emerald-700" : "bg-zinc-500 cursor-not-allowed opacity-60"}`}
         >
-          Commander →
+          {canCheckout
+            ? "Commander →"
+            : `Min. 5€ (encore ${missingForMin.toFixed(2)}€)`}
         </button>
       </div>
       <button
@@ -3255,7 +3500,15 @@ function CartView({
    CHECKOUT VIEW - étape 1 : Coordonnées + village
 ═══════════════════════════════════════════════════ */
 
-function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
+function CheckoutView({
+  total,
+  onBack,
+  onSuccess,
+  showToast,
+  dark,
+  user,
+  cart,
+}) {
   const [openedAt] = useState(() => Date.now());
   const [orderType, setOrderType] = useState("delivery");
 
@@ -3266,6 +3519,8 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
     streetNumber: "",
     streetName: user?.streetName || user?.address || "",
     village: user?.village || "",
+    specialAddr: "", // "" | "chm" | "pompiers" | "police"
+    specialAddrSub: "", // sous-lieu (urgence, municipale, etc.)
     notes: "",
   });
   const [errors, setErrors] = useState({});
@@ -3299,7 +3554,30 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
     },
     [],
   );
+  // Calcul du risque client en direct (debounced via deps de useMemo)
+  const riskAddress = useMemo(() => {
+    if (form.specialAddr) return `${form.specialAddr}-${form.specialAddrSub}`;
+    if (form.altAddress)
+      return [form.altAddressVal, form.altVillage].filter(Boolean).join(" ");
+    return [form.streetNumber, form.streetName, form.village]
+      .filter(Boolean)
+      .join(" ");
+  }, [
+    form.specialAddr,
+    form.specialAddrSub,
+    form.altAddress,
+    form.altAddressVal,
+    form.altVillage,
+    form.streetNumber,
+    form.streetName,
+    form.village,
+  ]);
 
+  const customerRisk = useMemo(
+    () => BlacklistDB.riskLevel(form.phone, riskAddress),
+    [form.phone, riskAddress],
+  );
+  const isBlocked = customerRisk >= 2;
   const handleAddressSelect = useCallback((val) => {
     setForm((f) => ({ ...f, streetName: val }));
     setErrors((er) => ({ ...er, streetName: "" }));
@@ -3318,11 +3596,24 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
       e.email = "Format d'email invalide";
     if (!validatePhone(form.phone))
       e.phone = "Numéro invalide (06/07 métropole ou 0639/0692/0693 Mayotte)";
+    if (isBlocked) {
+      showToast(
+        "🚫 Commande bloquée — Trop d'incidents passés. Contactez House Pizza.",
+        "error",
+      );
+      return;
+    }
     if (orderType === "delivery") {
-      if (!sanitize(form.streetName)) e.streetName = "Nom de rue requis";
-      if (!sanitize(form.village)) e.village = "Village requis";
-      if (form.altAddress && !sanitize(form.altAddressVal))
-        e.altAddressVal = "Autre adresse requise";
+      if (!form.specialAddr) {
+        if (!sanitize(form.streetName)) e.streetName = "Nom de rue requis";
+        if (!sanitize(form.village)) e.village = "Village requis";
+        if (form.altAddress && !sanitize(form.altAddressVal))
+          e.altAddressVal = "Autre adresse requise";
+      }
+      if (form.specialAddr === "chm" && !form.specialAddrSub)
+        e.specialAddrSub = "Choisir un service";
+      if (form.specialAddr === "police" && !form.specialAddrSub)
+        e.specialAddrSub = "Choisir police municipale ou nationale";
     }
     return e;
   };
@@ -3336,6 +3627,13 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
     if (Object.keys(e).length) {
       setErrors(e);
       showToast("Veuillez corriger les erreurs", "error");
+      return;
+    }
+    if (isBlocked) {
+      showToast(
+        "🚫 Commande bloquée — 2+ incidents enregistrés. Contactez House Pizza directement.",
+        "error",
+      );
       return;
     }
     setStep("payment");
@@ -3385,6 +3683,10 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
     PAYMENT_OPTIONS.find((p) => p.key === paymentMethod)?.label || "";
 
   const handlePaymentSubmit = async () => {
+    if (isBlocked) {
+      showToast("🚫 Commande bloquée", "error");
+      return;
+    }
     if (!paymentMethod) {
       showToast("Choisissez un mode de paiement", "error");
       return;
@@ -3415,13 +3717,26 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
       // Opt-in WhatsApp (consentement explicite RGPD)
       whatsappOptIn: wantsWhatsApp,
       whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
+      // Snapshot du panier pour la checklist préparation côté caisse
+      items: cart ? cart.map((it, i) => ({ ...it, idx: i, ready: false })) : [],
     });
   };
 
-  const deliveryAddress = form.altAddress
-    ? form.altAddressVal
-    : [form.streetNumber, form.streetName].filter(Boolean).join(" ");
-  const deliveryVillage = form.altAddress ? form.altVillage : form.village;
+  const SPECIAL_LABELS = {
+    chm: "CHM",
+    pompiers: "Caserne de pompiers",
+    police: "Poste de police",
+  };
+  const deliveryAddress = form.specialAddr
+    ? `${SPECIAL_LABELS[form.specialAddr]}${form.specialAddrSub ? ` - ${form.specialAddrSub}` : ""}`
+    : form.altAddress
+      ? form.altAddressVal
+      : [form.streetNumber, form.streetName].filter(Boolean).join(" ");
+  const deliveryVillage = form.specialAddr
+    ? "Mamoudzou"
+    : form.altAddress
+      ? form.altVillage
+      : form.village;
 
   // ── Étape paiement ──
   if (step === "payment") {
@@ -3571,7 +3886,7 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
           📍 Votre commande
         </h2>
       </div>
-
+      <RiskBanner phone={form.phone} address={riskAddress} dark={dark} />
       {/* Choix livraison / emporter */}
       <div
         className={`rounded-2xl p-1 mb-5 flex gap-1 border ${th.card(dark)}`}
@@ -3700,52 +4015,158 @@ function CheckoutView({ total, onBack, onSuccess, showToast, dark, user }) {
                 </span>
               )}
             </label>
+            {/* ── Adresses spéciales (lieux publics) ── */}
+            <div
+              className={`rounded-2xl border p-4 mb-3 ${th.card(dark)} ${th.border(dark)}`}
+            >
+              <p className={`text-sm font-semibold mb-3 ${th.text(dark)}`}>
+                📍 Lieu public (sans saisie d'adresse)
+              </p>
+              <div className="space-y-2">
+                {[
+                  {
+                    val: "chm",
+                    label: "🏥 CHM (Centre Hospitalier de Mayotte)",
+                  },
+                  { val: "pompiers", label: "🚒 Caserne de pompiers" },
+                  { val: "police", label: "👮 Poste de police" },
+                ].map(({ val, label }) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() =>
+                      setForm((f) => ({
+                        ...f,
+                        specialAddr: f.specialAddr === val ? "" : val,
+                        specialAddrSub: "",
+                        altAddress: false,
+                        altAddressVal: "",
+                        altVillage: "",
+                      }))
+                    }
+                    className={`w-full flex items-center gap-2.5 text-sm text-left transition-all active:scale-95 ${th.text(dark)}`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs ${form.specialAddr === val ? th.checkOn(dark) : th.checkOff(dark)}`}
+                    >
+                      {form.specialAddr === val ? "✓" : ""}
+                    </span>
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
 
-            {/* Ligne numéro + nom de rue */}
-            <div className="flex gap-2 mb-2">
-              {/* Numéro de rue */}
-              <div className="w-24 shrink-0">
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  value={form.streetNumber}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, "");
-                    setForm((f) => ({ ...f, streetNumber: val }));
-                  }}
-                  placeholder="N°"
-                  autoComplete="off"
-                  maxLength={6}
-                  style={{ fontSize: "16px" }}
-                  className={`w-full border-2 rounded-2xl px-3 py-3.5 outline-none transition-colors ${th.input(dark)}`}
-                />
-              </div>
-              {/* Nom de rue avec autocomplétion */}
-              <div className="flex-1 min-w-0">
-                <AddressAutocomplete
-                  value={form.streetName}
-                  village={form.village}
-                  onChange={(v) => {
-                    setForm((f) => ({ ...f, streetName: v }));
-                    setErrors((er) => ({ ...er, streetName: "" }));
-                  }}
-                  onSelect={handleAddressSelect}
-                  onVillageChange={(v) => {
-                    setForm((f) => ({ ...f, village: v }));
-                    setErrors((er) => ({ ...er, village: "" }));
-                  }}
-                  dark={dark}
-                  error={errors.streetName}
-                  placeholder="Nom de rue"
-                />
-              </div>
+              {form.specialAddr === "chm" && (
+                <div className="mt-3">
+                  <label
+                    className={`block text-xs font-semibold mb-1.5 ${th.textSub(dark)}`}
+                  >
+                    Service concerné
+                  </label>
+                  <select
+                    value={form.specialAddrSub}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setForm((f) => ({ ...f, specialAddrSub: v }));
+                      setErrors((er) => ({ ...er, specialAddrSub: "" }));
+                    }}
+                    className={`w-full rounded-xl border px-3 py-2.5 text-sm ${th.input(dark)}`}
+                  >
+                    <option value="">- Choisir -</option>
+                    <option value="Urgences">Urgences</option>
+                    <option value="Radiologie">Radiologie</option>
+                    <option value="Entrée principale">Entrée principale</option>
+                  </select>
+                  {errors.specialAddrSub && (
+                    <p className="text-xs text-red-500 mt-1">
+                      {errors.specialAddrSub}
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {form.specialAddr === "police" && (
+                <div className="mt-3">
+                  <label
+                    className={`block text-xs font-semibold mb-1.5 ${th.textSub(dark)}`}
+                  >
+                    Type
+                  </label>
+                  <div className="flex gap-2">
+                    {["Municipale", "Nationale"].map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => {
+                          setForm((f) => ({ ...f, specialAddrSub: t }));
+                          setErrors((er) => ({ ...er, specialAddrSub: "" }));
+                        }}
+                        className={`flex-1 py-2 rounded-xl text-sm font-semibold border-2 active:scale-95 transition-all ${form.specialAddrSub === t ? "bg-emerald-600 text-white border-emerald-600" : `${th.btnGhost(dark)}`}`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                  {errors.specialAddrSub && (
+                    <p className="text-xs text-red-500 mt-1">
+                      {errors.specialAddrSub}
+                    </p>
+                  )}
+                </div>
+              )}
             </div>
+            {/* Adresse classique */}
+            {!form.specialAddr && (
+              <>
+                {/* Ligne numéro + nom de rue */}
+                <div className="flex gap-2 mb-2">
+                  {/* Numéro de rue */}
+                  <div className="w-24 shrink-0">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={form.streetNumber}
+                      onChange={(e) => {
+                        const val = e.target.value.replace(/\D/g, "");
+                        setForm((f) => ({ ...f, streetNumber: val }));
+                      }}
+                      placeholder="N°"
+                      autoComplete="off"
+                      maxLength={6}
+                      style={{ fontSize: "16px" }}
+                      className={`w-full border-2 rounded-2xl px-3 py-3.5 outline-none transition-colors ${th.input(dark)}`}
+                    />
+                  </div>
+                  {/* Nom de rue avec autocomplétion */}
+                  <div className="flex-1 min-w-0">
+                    <AddressAutocomplete
+                      value={form.streetName}
+                      village={form.village}
+                      onChange={(v) => {
+                        setForm((f) => ({ ...f, streetName: v }));
+                        setErrors((er) => ({ ...er, streetName: "" }));
+                      }}
+                      onSelect={handleAddressSelect}
+                      onVillageChange={(v) => {
+                        setForm((f) => ({ ...f, village: v }));
+                        setErrors((er) => ({ ...er, village: "" }));
+                      }}
+                      dark={dark}
+                      error={errors.streetName}
+                      placeholder="Nom de rue"
+                    />
+                  </div>
+                </div>
 
-            {errors.streetName && (
-              <p className="text-red-500 text-xs mt-1">{errors.streetName}</p>
-            )}
-            {errors.village && (
-              <p className="text-red-500 text-xs mt-1">{errors.village}</p>
+                {errors.streetName && (
+                  <p className="text-red-500 text-xs mt-1">
+                    {errors.streetName}
+                  </p>
+                )}
+                {errors.village && (
+                  <p className="text-red-500 text-xs mt-1">{errors.village}</p>
+                )}
+              </>
             )}
           </div>
         )}
@@ -4231,7 +4652,727 @@ function PromoEditForm({
     </div>
   );
 }
+/* ═══════════════════════════════════════════════════
+   ORDERS OVERVIEW PANEL - Vue admin lecture seule
+   Visualisation temps réel des commandes en cours
+   sans possibilité d'édition (l'admin observe).
+═══════════════════════════════════════════════════ */
+function OrdersOverviewPanel({ dark }) {
+  const [orders, setOrders] = useState(() => DriverOrdersDB.load());
+  const [tab, setTab] = useState("active");
 
+  useEffect(() => {
+    const t = setInterval(() => setOrders(DriverOrdersDB.load()), 15000);
+    return () => clearInterval(t);
+  }, []);
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const inToday = (ts) => ts >= todayStart.getTime();
+
+  // Filtres
+  const active = orders.filter((o) => !o.cancelled && o.statusIdx < 5);
+  const prep = active.filter((o) => o.statusIdx <= 1);
+  const ready = active.filter((o) => o.statusIdx === 2);
+  const delivering = active.filter((o) => o.statusIdx >= 3 && o.statusIdx < 5);
+  const doneToday = orders.filter(
+    (o) => o.statusIdx >= 5 && !o.cancelled && inToday(o.createdAt || 0),
+  );
+  const cancelledToday = orders.filter(
+    (o) => o.cancelled && inToday(o.cancelledAt || o.createdAt || 0),
+  );
+
+  // KPIs jour
+  const revenueToday = doneToday.reduce((s, o) => s + Number(o.total || 0), 0);
+  const avgBasket = doneToday.length > 0 ? revenueToday / doneToday.length : 0;
+
+  const filters = {
+    active: { list: active, label: "En cours", emoji: "⏳" },
+    prep: { list: prep, label: "Prépa", emoji: "👨‍🍳" },
+    ready: { list: ready, label: "Prêtes", emoji: "✅" },
+    delivering: { list: delivering, label: "Livraison", emoji: "🛵" },
+    done: { list: doneToday, label: "Livrées", emoji: "🎉" },
+    cancelled: { list: cancelledToday, label: "Incidents", emoji: "❌" },
+  };
+  const currentList = filters[tab].list;
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className={`font-bold ${th.text(dark)}`}>📊 Activité temps réel</h3>
+        <span className={`text-xs ${th.textSub(dark)}`}>🔒 Lecture seule</span>
+      </div>
+
+      {/* Mini KPIs */}
+      <div className="grid grid-cols-3 gap-2 mb-4">
+        <div className={`rounded-xl border p-3 ${th.border(dark)}`}>
+          <p className={`text-[10px] uppercase font-bold ${th.textSub(dark)}`}>
+            CA jour
+          </p>
+          <p className={`text-lg font-bold ${th.text(dark)}`}>
+            {revenueToday.toFixed(0)} €
+          </p>
+        </div>
+        <div className={`rounded-xl border p-3 ${th.border(dark)}`}>
+          <p className={`text-[10px] uppercase font-bold ${th.textSub(dark)}`}>
+            Panier moyen
+          </p>
+          <p className={`text-lg font-bold ${th.text(dark)}`}>
+            {avgBasket.toFixed(0)} €
+          </p>
+        </div>
+        <div className={`rounded-xl border p-3 ${th.border(dark)}`}>
+          <p className={`text-[10px] uppercase font-bold ${th.textSub(dark)}`}>
+            En cours
+          </p>
+          <p className={`text-lg font-bold ${th.text(dark)}`}>
+            {active.length}
+          </p>
+        </div>
+      </div>
+
+      {/* Onglets */}
+      <div className="flex gap-1.5 mb-3 overflow-x-auto">
+        {Object.entries(filters).map(([id, f]) => (
+          <button
+            key={id}
+            onClick={() => setTab(id)}
+            className={`shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-bold border-2 active:scale-95 transition-all ${tab === id ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
+          >
+            {f.emoji} {f.label} ({f.list.length})
+          </button>
+        ))}
+      </div>
+
+      {/* Liste lecture seule */}
+      <div
+        className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)} max-h-96 overflow-y-auto`}
+      >
+        {currentList.length === 0 ? (
+          <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+            Rien à afficher
+          </p>
+        ) : (
+          currentList
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+            .map((o) => {
+              const meta = STATUS_META[o.statusIdx] || STATUS_META[0];
+              const time = new Date(
+                o.createdAt || Date.now(),
+              ).toLocaleTimeString("fr-FR", {
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+              const items = Array.isArray(o.items) ? o.items : [];
+              const pizzas = items.filter((i) => i.type === "pizza").length;
+              const drinks = items.filter((i) => i.type === "drink").length;
+              const readyCount = items.filter((i) => i.ready).length;
+              const totalItems = items.length;
+              const progress =
+                totalItems > 0 ? (readyCount / totalItems) * 100 : 0;
+              const risk = BlacklistDB.riskLevel(o.phone, o.address);
+
+              return (
+                <div key={o.number} className="px-3 py-2.5">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xs font-mono tabular-nums shrink-0">
+                      {time}
+                    </span>
+                    <span className={`text-xs font-bold ${th.text(dark)}`}>
+                      #{o.number}
+                    </span>
+                    <span
+                      className={`${o.cancelled ? "bg-red-500" : meta.color} text-white text-[10px] font-bold px-2 py-0.5 rounded-full ml-auto`}
+                    >
+                      {o.cancelled
+                        ? "❌ Annulée"
+                        : `${meta.emoji} ${ORDER_STATUS[o.statusIdx]}`}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs">
+                    <span
+                      className={`${th.text(dark)} font-semibold truncate flex-1`}
+                    >
+                      {o.customer}
+                    </span>
+                    {risk >= 2 && (
+                      <span className="bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                        🚫
+                      </span>
+                    )}
+                    {risk === 1 && (
+                      <span className="bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full">
+                        ⚠️
+                      </span>
+                    )}
+                    <span className={th.textSub(dark)}>
+                      {o.orderType === "delivery" ? "🛵" : "🏠"}
+                    </span>
+                    <span className={`font-bold ${th.text(dark)}`}>
+                      {Number(o.total).toFixed(2)} €
+                    </span>
+                  </div>
+                  <p
+                    className={`text-[11px] ${th.textSub(dark)} truncate mt-0.5`}
+                  >
+                    {pizzas > 0 && `${pizzas} 🍕 `}
+                    {drinks > 0 && `${drinks} 🥤 `}
+                    {o.orderType === "delivery" && o.address
+                      ? `· 📍 ${o.address}`
+                      : ""}
+                  </p>
+                  {/* Barre de progression prépa si en prépa */}
+                  {o.statusIdx === 1 && totalItems > 0 && (
+                    <div className="mt-1.5 flex items-center gap-2">
+                      <div
+                        className={`flex-1 h-1 rounded-full overflow-hidden ${dark ? "bg-zinc-800" : "bg-gray-200"}`}
+                      >
+                        <div
+                          className="h-full bg-amber-500 transition-all"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <span
+                        className={`text-[10px] font-bold tabular-nums ${th.textSub(dark)}`}
+                      >
+                        {readyCount}/{totalItems}
+                      </span>
+                    </div>
+                  )}
+                  {/* Temps écoulé */}
+                  {!o.cancelled && o.statusIdx < 5 && (
+                    <p
+                      className={`text-[10px] mt-0.5 ${
+                        Date.now() - (o.createdAt || 0) > 45 * 60 * 1000
+                          ? "text-red-500 font-bold"
+                          : Date.now() - (o.createdAt || 0) > 30 * 60 * 1000
+                            ? "text-amber-500 font-semibold"
+                            : th.textSub(dark)
+                      }`}
+                    >
+                      ⏱️ {Math.floor((Date.now() - (o.createdAt || 0)) / 60000)}{" "}
+                      min
+                    </p>
+                  )}
+                </div>
+              );
+            })
+        )}
+      </div>
+    </div>
+  );
+}
+/* ═══════════════════════════════════════════════════
+   EXPORT CSV - lit par Excel (BOM UTF-8 + séparateur ;)
+═══════════════════════════════════════════════════ */
+const csvEscape = (v) => {
+  if (v == null) return "";
+  const s = String(v);
+  return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+const downloadCSV = (filename, rows) => {
+  if (!rows?.length) {
+    alert("Aucune donnée à exporter");
+    return;
+  }
+  const headers = Object.keys(rows[0]);
+  const lines = [
+    headers.join(";"),
+    ...rows.map((r) => headers.map((h) => csvEscape(r[h])).join(";")),
+  ];
+  const blob = new Blob(["\uFEFF" + lines.join("\r\n")], {
+    type: "text/csv;charset=utf-8;",
+  });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+const fmtDate = (ts) => (ts ? new Date(ts).toLocaleDateString("fr-FR") : "");
+const fmtTime = (ts) =>
+  ts
+    ? new Date(ts).toLocaleTimeString("fr-FR", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "";
+const periodFilter = (orders, period) => {
+  if (period === "all") return orders;
+  const now = Date.now(),
+    day = 86400000;
+  if (period === "today") {
+    const s = new Date();
+    s.setHours(0, 0, 0, 0);
+    return orders.filter((o) => (o.createdAt || 0) >= s.getTime());
+  }
+  const days = { "7d": 7, "30d": 30, "90d": 90 }[period];
+  return orders.filter((o) => (o.createdAt || 0) >= now - days * day);
+};
+
+function ExportPanel({ dark }) {
+  const [period, setPeriod] = useState("30d");
+  const tag = () => `${new Date().toISOString().slice(0, 10)}_${period}`;
+
+  const exportOrders = () => {
+    const rows = periodFilter(DriverOrdersDB.load(), period).map((o) => ({
+      "N°": o.number,
+      Date: fmtDate(o.createdAt),
+      Heure: fmtTime(o.createdAt),
+      Client: o.customer || "",
+      Téléphone: o.phone || "",
+      Type: o.orderType === "delivery" ? "Livraison" : "À emporter",
+      Adresse: o.address || "",
+      "Nb pizzas": Array.isArray(o.items)
+        ? o.items.filter((i) => i.type === "pizza").length
+        : "",
+      "Nb boissons": Array.isArray(o.items)
+        ? o.items.filter((i) => i.type === "drink").length
+        : "",
+      "Total €": Number(o.total || 0)
+        .toFixed(2)
+        .replace(".", ","),
+      Paiement: o.paymentLabel || "",
+      "Code promo": o.promoCode || "",
+      "Remise %": o.promoDiscount || 0,
+      Statut: o.cancelled ? "Annulée" : ORDER_STATUS[o.statusIdx] || "",
+      "WhatsApp opt-in": o.whatsappOptIn ? "Oui" : "Non",
+      Notes: o.notes || "",
+    }));
+    downloadCSV(`commandes_${tag()}.csv`, rows);
+  };
+
+  const exportItems = () => {
+    const orders = periodFilter(DriverOrdersDB.load(), period);
+    const rows = [];
+    orders.forEach((o) => {
+      (o.items || []).forEach((it) =>
+        rows.push({
+          "N° cmd": o.number,
+          Date: fmtDate(o.createdAt),
+          Type: it.type,
+          Article: it.name,
+          Taille:
+            it.size === "large"
+              ? "Ø33"
+              : it.size === "medium"
+                ? "Ø29"
+                : it.size === "small"
+                  ? "Ø26"
+                  : it.volume || "",
+          Pâte: it.crust || "",
+          Suppléments: (it.extras || []).join(", "),
+          "Prix €": Number(it.price || 0)
+            .toFixed(2)
+            .replace(".", ","),
+          Offert: it.free ? "Oui" : "Non",
+        }),
+      );
+    });
+    downloadCSV(`articles_${tag()}.csv`, rows);
+  };
+
+  const exportRex = () => {
+    const rows = periodFilter(RexDB.list(), period).map((r) => ({
+      Date: fmtDate(r.createdAt),
+      Heure: fmtTime(r.createdAt),
+      "N° cmd": r.orderNumber,
+      Client: r.customer || "",
+      Téléphone: r.phone || "",
+      Adresse: r.address || "",
+      Type: r.orderType === "delivery" ? "Livraison" : "À emporter",
+      "Total €": Number(r.total || 0)
+        .toFixed(2)
+        .replace(".", ","),
+      Raison: REX_REASON_LABEL(r.reason),
+      Précision: r.customReason || "",
+      Commentaire: r.comment || "",
+      "Signalé par": r.createdBy || "",
+    }));
+    downloadCSV(`incidents_${tag()}.csv`, rows);
+  };
+
+  const exportRiskCustomers = () => {
+    const rows = BlacklistDB.byCustomer().map((c) => ({
+      Client: c.customer || "",
+      Téléphone: c.phone || "",
+      Adresse: c.address || "",
+      "Nb incidents": c.count,
+      Niveau: c.count >= 2 ? "🚫 Bloqué" : "⚠️ Vigilance",
+      "Dernier incident": fmtDate(c.incidents[0]?.createdAt),
+    }));
+    downloadCSV(`clients_risque_${tag()}.csv`, rows);
+  };
+
+  const exportRoles = () => {
+    const rows = RolesDB.list().map((r) => ({
+      Email: r.email,
+      Rôle: ROLE_LABELS[r.role] || r.role,
+    }));
+    downloadCSV(`habilitations_${tag()}.csv`, rows);
+  };
+
+  const exportSynthesis = () => {
+    const orders = periodFilter(DriverOrdersDB.load(), period);
+    const valid = orders.filter((o) => !o.cancelled);
+    const rex = periodFilter(RexDB.list(), period);
+    const allItems = valid.flatMap((o) => o.items || []);
+    const pizzaCount = {};
+    allItems
+      .filter((i) => i.type === "pizza")
+      .forEach((i) => {
+        pizzaCount[i.name] = (pizzaCount[i.name] || 0) + 1;
+      });
+    const topPizzas = Object.entries(pizzaCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5)
+      .map(([n, c]) => `${n} (${c})`)
+      .join(" | ");
+    const ca = valid.reduce((s, o) => s + Number(o.total || 0), 0);
+    const rows = [
+      {
+        Période: period,
+        "Date export": fmtDate(Date.now()),
+        "Nb commandes": valid.length,
+        "Nb annulées": orders.length - valid.length,
+        "Nb incidents": rex.length,
+        "CA total €": ca.toFixed(2).replace(".", ","),
+        "Panier moyen €": valid.length
+          ? (ca / valid.length).toFixed(2).replace(".", ",")
+          : "0",
+        "Nb livraisons": valid.filter((o) => o.orderType === "delivery").length,
+        "Nb à emporter": valid.filter((o) => o.orderType !== "delivery").length,
+        "Top 5 pizzas": topPizzas,
+      },
+    ];
+    downloadCSV(`synthese_${tag()}.csv`, rows);
+  };
+
+  const btn =
+    "px-3 py-2.5 rounded-xl text-xs font-bold text-white active:scale-95 transition-all flex items-center justify-center gap-1.5";
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <h3 className={`font-bold mb-1 ${th.text(dark)}`}>
+        📥 Export Excel (CSV)
+      </h3>
+      <p className={`text-xs mb-3 ${th.textSub(dark)}`}>
+        Double-clic sur le fichier téléchargé → s'ouvre dans Excel. Accents et €
+        préservés.
+      </p>
+
+      <div className="flex gap-1.5 mb-3 overflow-x-auto">
+        {[
+          { id: "today", label: "Aujourd'hui" },
+          { id: "7d", label: "7 jours" },
+          { id: "30d", label: "30 jours" },
+          { id: "90d", label: "90 jours" },
+          { id: "all", label: "Tout" },
+        ].map((p) => (
+          <button
+            key={p.id}
+            onClick={() => setPeriod(p.id)}
+            className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${period === p.id ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <button
+          onClick={exportOrders}
+          className={`${btn} bg-blue-600 hover:bg-blue-700`}
+        >
+          📦 Commandes
+        </button>
+        <button
+          onClick={exportItems}
+          className={`${btn} bg-blue-600 hover:bg-blue-700`}
+        >
+          🍕 Articles vendus
+        </button>
+        <button
+          onClick={exportSynthesis}
+          className={`${btn} bg-emerald-600 hover:bg-emerald-700`}
+        >
+          📊 Synthèse KPI
+        </button>
+        <button
+          onClick={exportRex}
+          className={`${btn} bg-red-500 hover:bg-red-600`}
+        >
+          ⚠️ Incidents
+        </button>
+        <button
+          onClick={exportRiskCustomers}
+          className={`${btn} bg-red-500 hover:bg-red-600`}
+        >
+          🚫 Clients risque
+        </button>
+        <button
+          onClick={exportRoles}
+          className={`${btn} bg-zinc-700 hover:bg-zinc-600`}
+        >
+          🔑 Habilitations
+        </button>
+      </div>
+    </div>
+  );
+}
+/* ═══════════════════════════════════════════════════
+   INCIDENTS PANEL - Vue admin : REX + clients à risque
+═══════════════════════════════════════════════════ */
+function IncidentsPanel({ dark }) {
+  const [tab, setTab] = useState("incidents");
+  const [rex, setRex] = useState(() => RexDB.list());
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      setRex(RexDB.list());
+      setTick((x) => x + 1);
+    }, 10000);
+    return () => clearInterval(t);
+  }, []);
+
+  const customers = BlacklistDB.byCustomer();
+  const blocked = customers.filter((c) => c.count >= 2);
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className={`font-bold ${th.text(dark)}`}>⚠️ Incidents (REX)</h3>
+        <div className="flex gap-3 text-xs">
+          <span className={th.textSub(dark)}>
+            Total : <strong className="text-red-500">{rex.length}</strong>
+          </span>
+          <span className={th.textSub(dark)}>
+            Bloqués : <strong className="text-red-500">{blocked.length}</strong>
+          </span>
+        </div>
+      </div>
+
+      <div className="flex gap-2 mb-3">
+        {[
+          { id: "incidents", label: "📋 Incidents" },
+          { id: "customers", label: "👥 Clients à risque" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 active:scale-95 transition-all ${tab === t.id ? "bg-red-500 text-white border-red-500" : th.btnGhost(dark)}`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "incidents" ? (
+        rex.length === 0 ? (
+          <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+            Aucun incident enregistré 🎉
+          </p>
+        ) : (
+          <div
+            className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)} max-h-96 overflow-y-auto`}
+          >
+            {rex.map((r) => (
+              <div key={r.id} className="px-4 py-3">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="text-xs font-mono">
+                    {new Date(r.createdAt).toLocaleString("fr-FR", {
+                      day: "2-digit",
+                      month: "2-digit",
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  <span className="text-xs bg-red-500 text-white font-bold px-2 py-0.5 rounded-full">
+                    #{r.orderNumber}
+                  </span>
+                  <span className={`ml-auto text-xs ${th.textSub(dark)}`}>
+                    {r.createdBy}
+                  </span>
+                </div>
+                <p className={`text-sm font-bold ${th.text(dark)}`}>
+                  {r.customer || "—"} · {r.phone || "—"}
+                </p>
+                <p className={`text-xs ${th.textSub(dark)} truncate`}>
+                  {r.address}
+                </p>
+                <p className="text-sm mt-1 text-red-500 font-semibold">
+                  {REX_REASON_LABEL(r.reason)}
+                  {r.customReason ? ` — ${r.customReason}` : ""}
+                </p>
+                {r.comment && (
+                  <p className={`text-xs italic mt-1 ${th.textSub(dark)}`}>
+                    💬 {r.comment}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        )
+      ) : customers.length === 0 ? (
+        <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+          Aucun client à risque 🎉
+        </p>
+      ) : (
+        <div
+          className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+        >
+          {customers.map((c, i) => (
+            <div key={i} className="px-4 py-3 flex items-center gap-3">
+              <span
+                className={`shrink-0 ${c.count >= 2 ? "bg-red-500" : "bg-amber-500"} text-white text-xs font-bold px-2 py-1 rounded-full`}
+              >
+                {c.count >= 2 ? "🚫" : "⚠️"} {c.count}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className={`font-bold text-sm truncate ${th.text(dark)}`}>
+                  {c.customer || "—"}
+                </p>
+                <p className={`text-xs ${th.textSub(dark)}`}>{c.phone}</p>
+                <p className={`text-xs truncate ${th.textSub(dark)}`}>
+                  📍 {c.address}
+                </p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+/* ═══════════════════════════════════════════════════
+   ACCESS MANAGER - habilitations (admin only)
+═══════════════════════════════════════════════════ */
+function AccessManager({ dark }) {
+  const [list, setList] = useState(() => RolesDB.list());
+  const [newEmail, setNewEmail] = useState("");
+  const [newRole, setNewRole] = useState("cashier");
+  const [err, setErr] = useState("");
+  const [confirmRm, setConfirmRm] = useState(null);
+
+  const refresh = () => setList(RolesDB.list());
+
+  const addAccess = () => {
+    setErr("");
+    const res = RolesDB.set(newEmail, newRole);
+    if (!res.ok) {
+      setErr(res.err);
+      return;
+    }
+    setNewEmail("");
+    setNewRole("cashier");
+    refresh();
+  };
+
+  const removeAccess = (email) => {
+    const res = RolesDB.remove(email);
+    if (!res.ok) {
+      setErr(res.err);
+      return;
+    }
+    setConfirmRm(null);
+    refresh();
+  };
+
+  return (
+    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+      <h3 className={`font-bold mb-1 ${th.text(dark)}`}>
+        🔑 Gestion des accès
+      </h3>
+      <p className={`text-xs mb-4 ${th.textSub(dark)}`}>
+        L'utilisateur doit d'abord créer son compte normalement. Vous lui
+        attribuez ensuite un rôle ici.
+      </p>
+
+      {/* Formulaire ajout */}
+      <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
+        <input
+          type="email"
+          value={newEmail}
+          onChange={(e) => {
+            setNewEmail(e.target.value);
+            setErr("");
+          }}
+          placeholder="email@exemple.com"
+          className={`w-full rounded-xl border px-3 py-2.5 text-sm mb-2 ${th.input(dark)}`}
+        />
+        <div className="flex gap-2 mb-2">
+          {["cashier", "driver", "admin"].map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setNewRole(r)}
+              className={`flex-1 py-2 rounded-xl text-xs font-semibold border-2 active:scale-95 transition-all ${newRole === r ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
+            >
+              {ROLE_LABELS[r]}
+            </button>
+          ))}
+        </div>
+        {err && <p className="text-xs text-red-500 mb-2">{err}</p>}
+        <button
+          onClick={addAccess}
+          disabled={!newEmail.trim()}
+          className="w-full bg-emerald-600 hover:bg-emerald-700 disabled:bg-zinc-500 disabled:opacity-60 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95 transition-all"
+        >
+          ➕ Attribuer le rôle
+        </button>
+      </div>
+
+      {/* Liste */}
+      <div
+        className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+      >
+        {list.map(({ email, role }) => (
+          <div key={email} className="flex items-center gap-3 px-4 py-3">
+            <div className="flex-1 min-w-0">
+              <p className={`text-sm font-semibold truncate ${th.text(dark)}`}>
+                {email}
+              </p>
+              <p className={`text-xs ${th.textSub(dark)}`}>
+                {ROLE_LABELS[role]}
+              </p>
+            </div>
+            {email === PROTECTED_ADMIN ? (
+              <span className="text-xs text-amber-500 font-semibold">
+                🔒 Protégé
+              </span>
+            ) : confirmRm === email ? (
+              <div className="flex gap-1">
+                <button
+                  onClick={() => removeAccess(email)}
+                  className="text-xs bg-red-500 text-white px-2.5 py-1.5 rounded-lg font-bold"
+                >
+                  Confirmer
+                </button>
+                <button
+                  onClick={() => setConfirmRm(null)}
+                  className={`text-xs px-2.5 py-1.5 rounded-lg font-bold ${th.btnGhost(dark)}`}
+                >
+                  ×
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setConfirmRm(email)}
+                className="text-xs bg-red-50 dark:bg-red-950 text-red-500 px-3 py-1.5 rounded-lg font-bold active:scale-95"
+              >
+                Retirer
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 /* ═══════════════════════════════════════════════════
    ADMIN VIEW - Dashboard
 ═══════════════════════════════════════════════════ */
@@ -4355,7 +5496,10 @@ function AdminView({ onBack, dark }) {
           Mode démo
         </span>
       </div>
-
+      <AccessManager dark={dark} />
+      <IncidentsPanel dark={dark} />
+      <OrdersOverviewPanel dark={dark} />
+      <ExportPanel dark={dark} />
       {/* KPIs */}
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-6">
         {[
@@ -4635,437 +5779,1047 @@ const DRIVER_STEPS = [
   { idx: 5, label: "Livrée", short: "Livrée" },
 ];
 
-function DriverView({ onBack, dark }) {
-  // Onglets : "todo" (à prendre) | "doing" (en cours) | "done" (livrées du jour)
-  const [tab, setTab] = useState("todo");
+/* ═══════════════════════════════════════════════════
+   REX MODAL - Signalement d'incident (immuable)
+═══════════════════════════════════════════════════ */
+function RexModal({
+  order,
+  onClose,
+  onSubmitted,
+  dark,
+  currentUser,
+  showToast,
+}) {
+  const [reason, setReason] = useState("");
+  const [customReason, setCustomReason] = useState("");
+  const [comment, setComment] = useState("");
+  const [step, setStep] = useState("form"); // form | confirm
+
+  const valid =
+    reason && (reason !== "other" || customReason.trim().length > 0);
+
+  const submit = () => {
+    if (!valid) return;
+    const record = {
+      orderNumber: order.number,
+      reason,
+      customReason: reason === "other" ? customReason.trim().slice(0, 50) : "",
+      comment: comment.trim().slice(0, 145),
+      createdBy: currentUser?.email || "?",
+      phone: order.phone || "",
+      address: order.address || "",
+      customer: order.customer || "",
+      total: order.total || 0,
+      orderType: order.orderType || "delivery",
+    };
+    RexDB.add(record);
+    DriverOrdersDB.update(order.number, {
+      cancelled: true,
+      cancelledAt: Date.now(),
+      cancelReasonId: reason,
+    });
+    showToast?.("⚠️ Incident enregistré");
+    onSubmitted?.();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 bg-black/70 flex items-end sm:items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`w-full max-w-md rounded-3xl p-5 ${th.card(dark)} max-h-[90vh] overflow-y-auto`}
+      >
+        {step === "form" ? (
+          <>
+            <h3 className={`text-lg font-bold mb-1 ${th.text(dark)}`}>
+              ⚠️ Signaler un incident
+            </h3>
+            <p className={`text-xs mb-4 ${th.textSub(dark)}`}>
+              Commande #{order.number} · {order.customer}
+            </p>
+
+            <label
+              className={`block text-xs font-semibold mb-2 ${th.textSub(dark)}`}
+            >
+              Raison *
+            </label>
+            <div className="space-y-2 mb-3">
+              {REX_REASONS.map((r) => (
+                <button
+                  key={r.id}
+                  type="button"
+                  onClick={() => setReason(r.id)}
+                  className={`w-full text-left px-3 py-2.5 rounded-xl border-2 text-sm font-semibold active:scale-[0.98] transition-all ${reason === r.id ? "bg-red-500/10 border-red-500 text-red-500" : th.btnGhost(dark)}`}
+                >
+                  {r.label}
+                </button>
+              ))}
+            </div>
+
+            {reason === "other" && (
+              <div className="mb-3">
+                <label
+                  className={`block text-xs font-semibold mb-1 ${th.textSub(dark)}`}
+                >
+                  Précisez * ({customReason.length}/50)
+                </label>
+                <input
+                  value={customReason}
+                  onChange={(e) => setCustomReason(e.target.value.slice(0, 50))}
+                  maxLength={50}
+                  className={`w-full rounded-xl border px-3 py-2.5 text-sm ${th.input(dark)}`}
+                  placeholder="Brève raison..."
+                />
+              </div>
+            )}
+
+            <label
+              className={`block text-xs font-semibold mb-1 ${th.textSub(dark)}`}
+            >
+              Commentaire (optionnel, {comment.length}/145)
+            </label>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value.slice(0, 145))}
+              maxLength={145}
+              rows={3}
+              className={`w-full rounded-xl border px-3 py-2.5 text-sm mb-4 ${th.input(dark)}`}
+              placeholder="Détails utiles pour l'admin..."
+            />
+
+            <div className="flex gap-2">
+              <button
+                onClick={onClose}
+                className={`flex-1 py-3 rounded-xl font-bold border-2 active:scale-95 ${th.btnGhost(dark)}`}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={() => setStep("confirm")}
+                disabled={!valid}
+                className="flex-1 py-3 rounded-xl font-bold bg-red-500 hover:bg-red-600 disabled:bg-zinc-500 disabled:opacity-50 text-white active:scale-95 transition-all"
+              >
+                Suivant →
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h3 className={`text-lg font-bold mb-2 ${th.text(dark)}`}>
+              Confirmer ?
+            </h3>
+            <div className="bg-amber-500/10 border-2 border-amber-500 rounded-xl p-3 mb-4">
+              <p className="text-sm font-bold text-amber-500 mb-1">
+                ⚠️ Action irréversible
+              </p>
+              <p className={`text-xs ${th.text(dark)}`}>
+                Cet incident sera enregistré <strong>définitivement</strong> et
+                ne pourra pas être modifié. Le client sera ajouté à la liste des
+                incidents.
+              </p>
+            </div>
+            <div className={`rounded-xl border p-3 mb-4 ${th.border(dark)}`}>
+              <p className={`text-xs ${th.textSub(dark)} mb-1`}>Raison :</p>
+              <p className={`text-sm font-semibold ${th.text(dark)}`}>
+                {REX_REASON_LABEL(reason)}
+                {reason === "other" ? ` — ${customReason}` : ""}
+              </p>
+              {comment && (
+                <>
+                  <p className={`text-xs ${th.textSub(dark)} mt-2 mb-1`}>
+                    Commentaire :
+                  </p>
+                  <p className={`text-sm italic ${th.text(dark)}`}>{comment}</p>
+                </>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setStep("form")}
+                className={`flex-1 py-3 rounded-xl font-bold border-2 active:scale-95 ${th.btnGhost(dark)}`}
+              >
+                ← Modifier
+              </button>
+              <button
+                onClick={submit}
+                className="flex-1 py-3 rounded-xl font-bold bg-red-500 hover:bg-red-600 text-white active:scale-95"
+              >
+                ✓ Confirmer
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   RISK BANNER - Bandeau d'alerte client à risque
+═══════════════════════════════════════════════════ */
+function RiskBanner({ phone, address, dark, compact = false }) {
+  const level = BlacklistDB.riskLevel(phone, address);
+  if (level === 0) return null;
+  const incidents = BlacklistDB.incidents(phone, address);
+  const isBlocked = level >= 2;
+  const bg = isBlocked ? "bg-red-500" : "bg-amber-500";
+  const txt = isBlocked
+    ? `🚫 CLIENT BLOQUÉ — ${incidents.length} incidents — Paiement avance OBLIGATOIRE`
+    : `⚠️ ${incidents.length} incident — Vigilance + paiement avance recommandé`;
+  if (compact)
+    return (
+      <span
+        className={`${bg} text-white text-[10px] font-bold px-2 py-0.5 rounded-full`}
+      >
+        {isBlocked ? "🚫" : "⚠️"}
+      </span>
+    );
+  return (
+    <div className={`${bg} text-white rounded-2xl p-3 mb-3`}>
+      <p className="text-sm font-bold">{txt}</p>
+      {incidents.length > 0 && (
+        <details className="mt-2">
+          <summary className="text-xs cursor-pointer">
+            Voir l'historique ({incidents.length})
+          </summary>
+          <ul className="mt-1.5 text-xs space-y-1">
+            {incidents.slice(0, 5).map((i) => (
+              <li key={i.id}>
+                • {new Date(i.createdAt).toLocaleDateString("fr-FR")} —{" "}
+                {REX_REASON_LABEL(i.reason)}
+                {i.customReason ? ` (${i.customReason})` : ""}
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+    </div>
+  );
+}
+/* ═══════════════════════════════════════════════════
+   CASHIER VIEW - vrai outil de gestion caisse
+   - Liste triée par heure (ancienne → récente)
+   - Onglets par état
+   - Fiche : checklist préparation (auto → "Prête")
+   - Notif WhatsApp si takeaway prête
+═══════════════════════════════════════════════════ */
+function CashierView({ onBack, onNewOrder, dark, showToast }) {
+  const [rexFor, setRexFor] = useState(null);
+  const [currentUser] = useState(() => SessionDB.load());
+  const [tab, setTab] = useState("all");
   const [orders, setOrders] = useState(() => DriverOrdersDB.load());
   const [selectedNum, setSelectedNum] = useState(null);
-  const [tick, setTick] = useState(0); // forcer re-render après update
+  const [, setTick] = useState(0);
 
-  // Auto-refresh toutes les 30s pour capter nouvelles commandes
   useEffect(() => {
     const t = setInterval(() => setOrders(DriverOrdersDB.load()), 30000);
     return () => clearInterval(t);
   }, []);
 
-  // Re-render local après update
-  useEffect(() => {
+  const refresh = () => {
     setOrders(DriverOrdersDB.load());
-  }, [tick]);
+    setTick((t) => t + 1);
+  };
 
-  // Filtrage par onglet
   const todayStart = new Date();
   todayStart.setHours(0, 0, 0, 0);
   const inToday = (ts) => ts >= todayStart.getTime();
 
-  const todoOrders = orders.filter(
-    (o) => o.orderType === "delivery" && o.statusIdx >= 2 && o.statusIdx < 3,
-  );
-  const doingOrders = orders.filter(
-    (o) => o.orderType === "delivery" && o.statusIdx >= 3 && o.statusIdx < 5,
-  );
-  const doneOrders = orders.filter(
-    (o) =>
-      o.orderType === "delivery" &&
-      o.statusIdx >= 5 &&
-      inToday(o.createdAt || 0),
+  // Tri par heure de commande (ancienne d'abord)
+  const sorted = [...orders].sort(
+    (a, b) => (a.createdAt || 0) - (b.createdAt || 0),
   );
 
-  // Stats du jour
-  const todayDelivered = doneOrders.length;
-  const todayRevenue = doneOrders.reduce((s, o) => s + Number(o.total || 0), 0);
-  const inProgress = doingOrders.length;
-
+  const filters = {
+    all: (o) => true,
+    todo: (o) => o.statusIdx <= 1,
+    ready: (o) => o.statusIdx === 2,
+    later: (o) => o.statusIdx >= 3 && inToday(o.createdAt || 0),
+  };
+  const counts = {
+    all: sorted.length,
+    todo: sorted.filter(filters.todo).length,
+    ready: sorted.filter(filters.ready).length,
+    later: sorted.filter(filters.later).length,
+  };
+  const list = sorted.filter(filters[tab]);
   const selected = selectedNum
     ? orders.find((o) => o.number === selectedNum)
     : null;
 
-  // Avance statut d'une commande
-  const advanceStatus = (order) => {
-    const next = Math.min(5, (order.statusIdx ?? 2) + 1);
-    DriverOrdersDB.update(order.number, { statusIdx: next });
-    // Pour les démos non persistées : on patch en mémoire
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.number === order.number ? { ...o, statusIdx: next } : o,
-      ),
-    );
-    setTick((t) => t + 1);
-  };
-
-  // ── Vue détail d'une commande ──
+  // ── Fiche détail ──
   if (selected) {
-    const mapQuery = encodeURIComponent(selected.address || "");
-    const currentStep = DRIVER_STEPS.find((s) => s.idx === selected.statusIdx);
-    const isDone = selected.statusIdx >= 5;
-    const nextLabel =
-      selected.statusIdx === 2
-        ? "📦 Prendre la commande"
-        : selected.statusIdx === 3
-          ? "🛵 Démarrer la livraison"
-          : selected.statusIdx === 4
-            ? "✅ Marquer livrée"
-            : null;
+    const items = Array.isArray(selected.items) ? selected.items : [];
+    const allReady = items.length > 0 && items.every((it) => it.ready);
+    const someReady = items.some((it) => it.ready);
+
+    const toggleItem = (idx) => {
+      const nextItems = items.map((it, i) =>
+        i === idx ? { ...it, ready: !it.ready } : it,
+      );
+      const patch = { items: nextItems };
+      // Auto-passage Prête si tout coché et on est en prépa
+      if (nextItems.every((it) => it.ready) && selected.statusIdx === 1) {
+        patch.statusIdx = 2;
+      }
+      DriverOrdersDB.update(selected.number, patch);
+      refresh();
+    };
+
+    const startPrep = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 1 });
+      refresh();
+    };
+
+    const forceReady = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 2 });
+      refresh();
+    };
+
+    const notifyTakeawayReady = () => {
+      if (!selected.whatsappOptIn || !selected.whatsappNumber) {
+        showToast?.("Client non opt-in WhatsApp");
+        return;
+      }
+      sendWhatsApp(
+        selected.whatsappNumber,
+        `🍕 House Pizza - Bonjour ${selected.customer}, votre commande #${selected.number} est PRÊTE ! Venez la récupérer.`,
+      );
+    };
+
+    const meta = STATUS_META[selected.statusIdx] || STATUS_META[0];
+    const timeStr = new Date(
+      selected.createdAt || Date.now(),
+    ).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
 
     return (
-      <div className="max-w-md mx-auto px-4 pb-20 pt-6">
-        <div className="flex items-center gap-3 mb-6">
+      <div className="max-w-2xl mx-auto px-4 pb-20 pt-6">
+        <div className="flex items-center gap-3 mb-5">
           <button
             onClick={() => setSelectedNum(null)}
             className={`w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${dark ? "bg-zinc-900 border-zinc-700 text-zinc-200" : "bg-white border-gray-200 text-gray-700"}`}
           >
             ←
           </button>
-          <h2 className={`text-xl font-bold ${th.text(dark)}`}>
-            Commande #{selected.number}
-          </h2>
-        </div>
-
-        {/* Statut + progression */}
-        <div className={`rounded-3xl border p-5 mb-4 ${th.card(dark)}`}>
-          <div className="flex items-center gap-2 mb-3">
-            <span
-              className={`w-3 h-3 rounded-full ${isDone ? "bg-zinc-400" : "bg-emerald-500 animate-pulse"}`}
-            />
-            <p className={`font-bold ${th.text(dark)}`}>
-              {ORDER_STATUS[selected.statusIdx] || "-"}
+          <div className="flex-1">
+            <h2 className={`text-xl font-bold ${th.text(dark)}`}>
+              #{selected.number}
+            </h2>
+            <p className={`text-xs ${th.textSub(dark)}`}>
+              {timeStr} ·{" "}
+              {selected.orderType === "delivery"
+                ? "🛵 Livraison"
+                : "🏠 À emporter"}
             </p>
-            {selected._demo && (
-              <span className="ml-auto text-[10px] bg-amber-400 text-amber-950 font-bold px-2 py-0.5 rounded-full">
-                DÉMO
-              </span>
-            )}
           </div>
-          <div className="flex gap-1 mb-4">
-            {DRIVER_STEPS.map((s) => (
-              <div
-                key={s.idx}
-                className={`flex-1 h-1.5 rounded-full transition-all ${selected.statusIdx >= s.idx ? "bg-emerald-500" : dark ? "bg-zinc-700" : "bg-gray-200"}`}
-              />
-            ))}
-          </div>
-          {!isDone && nextLabel && (
-            <button
-              onClick={() => advanceStatus(selected)}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all text-lg"
-            >
-              {nextLabel}
-            </button>
-          )}
-          {isDone && (
-            <div
-              className={`rounded-2xl border border-emerald-500/30 px-4 py-3 text-center ${dark ? "bg-emerald-950/30" : "bg-emerald-50"}`}
-            >
-              <p
-                className={`text-sm font-bold ${dark ? "text-emerald-400" : "text-emerald-600"}`}
-              >
-                ✅ Livraison terminée
-              </p>
-            </div>
-          )}
-        </div>
-
-        {/* Détails commande */}
-        <div className={`rounded-3xl border p-5 mb-4 ${th.card(dark)}`}>
-          <div className="space-y-2">
-            <div className="flex justify-between">
-              <span className={`text-sm ${th.textSub(dark)}`}>Client</span>
-              <span className={`text-sm font-semibold ${th.text(dark)}`}>
-                {selected.customer || "-"}
-              </span>
-            </div>
-            <div className="flex justify-between items-center">
-              <span className={`text-sm ${th.textSub(dark)}`}>Téléphone</span>
-              <a
-                href={`tel:${selected.phone}`}
-                className="text-sm font-semibold text-emerald-500 underline"
-              >
-                {selected.phone || "-"}
-              </a>
-            </div>
-            <div className="flex justify-between">
-              <span className={`text-sm ${th.textSub(dark)}`}>Total</span>
-              <span className="text-sm font-bold text-emerald-500">
-                {Number(selected.total).toFixed(2)} €
-              </span>
-            </div>
-            <div className="flex justify-between">
-              <span className={`text-sm ${th.textSub(dark)}`}>Paiement</span>
-              <span className={`text-sm font-semibold ${th.text(dark)}`}>
-                {selected.paymentLabel || "-"}
-              </span>
-            </div>
-            <div className={`border-t pt-3 ${th.border(dark)}`}>
-              <p className={`text-xs ${th.textSub(dark)}`}>Adresse</p>
-              <p className={`text-sm font-semibold mt-0.5 ${th.text(dark)}`}>
-                {selected.address || "-"}
-              </p>
-            </div>
-            {selected.notes && (
-              <div className={`border-t pt-3 ${th.border(dark)}`}>
-                <p className={`text-xs ${th.textSub(dark)}`}>Instructions</p>
-                <p className={`text-sm font-semibold mt-0.5 ${th.text(dark)}`}>
-                  💬 {selected.notes}
-                </p>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Notifier WhatsApp (si opt-in) */}
-        {selected.whatsappOptIn && selected.whatsappNumber && !isDone && (
-          <a
-            href={`https://wa.me/${selected.whatsappNumber}?text=${encodeURIComponent(
-              `Bonjour ${selected.customer?.split(" ")[0] || ""}, House Pizza : ${
-                selected.statusIdx === 3
-                  ? "votre commande #" +
-                    selected.number +
-                    " est prise en charge, départ imminent 🛵"
-                  : selected.statusIdx === 4
-                    ? "votre livreur arrive dans quelques minutes 🛵"
-                    : "mise à jour de votre commande #" + selected.number
-              }`,
-            )}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-2 bg-emerald-500 hover:bg-emerald-600 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all mb-3"
+          <span
+            className={`${meta.color} text-white text-xs font-bold px-3 py-1.5 rounded-full`}
           >
-            💬 Notifier le client via WhatsApp
-          </a>
+            {meta.emoji} {ORDER_STATUS[selected.statusIdx]}
+          </span>
+        </div>
+        <RiskBanner
+          phone={selected.phone}
+          address={selected.address}
+          dark={dark}
+        />
+        {selected.cancelled && (
+          <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
+            <p className="text-sm font-bold">❌ INCIDENT — Commande annulée</p>
+            <p className="text-xs mt-1">
+              {REX_REASON_LABEL(selected.cancelReasonId)}
+            </p>
+          </div>
         )}
 
-        {!selected.whatsappOptIn && !isDone && (
+        {/* Bloc client */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <p
+            className={`text-xs font-semibold uppercase tracking-wide mb-1 ${th.textSub(dark)}`}
+          >
+            Client
+          </p>
+          <p className={`font-bold ${th.text(dark)}`}>{selected.customer}</p>
           <a
             href={`tel:${selected.phone}`}
-            className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all mb-3"
+            className="text-emerald-500 text-sm font-semibold"
           >
-            📞 Appeler le client
+            📞 {selected.phone}
           </a>
+          {selected.whatsappOptIn && (
+            <span className="ml-2 text-xs text-emerald-500 font-semibold">
+              💬 WhatsApp opt-in
+            </span>
+          )}
+        </div>
+
+        {/* Adresse */}
+        {selected.orderType === "delivery" && (
+          <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide mb-1 ${th.textSub(dark)}`}
+            >
+              Adresse
+            </p>
+            <p className={`text-sm ${th.text(dark)}`}>{selected.address}</p>
+            {selected.notes && (
+              <p className={`text-xs mt-1 italic ${th.textSub(dark)}`}>
+                📝 {selected.notes}
+              </p>
+            )}
+          </div>
         )}
 
-        {/* GPS */}
-        {!isDone && (
-          <a
-            href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="w-full flex items-center justify-center gap-2 bg-red-600 hover:bg-red-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all"
+        {/* Total + paiement */}
+        <div
+          className={`rounded-2xl border p-4 mb-3 flex items-center justify-between ${th.card(dark)}`}
+        >
+          <div>
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide ${th.textSub(dark)}`}
+            >
+              Total
+            </p>
+            <p className={`font-bold text-lg ${th.text(dark)}`}>
+              {Number(selected.total).toFixed(2)} €
+            </p>
+          </div>
+          <span className={`text-xs ${th.textSub(dark)}`}>
+            {selected.paymentLabel}
+          </span>
+        </div>
+
+        {/* CHECKLIST PRÉPARATION */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <div className="flex items-center justify-between mb-3">
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide ${th.textSub(dark)}`}
+            >
+              👨‍🍳 Préparation
+            </p>
+            {items.length > 0 && (
+              <span
+                className={`text-xs font-semibold ${allReady ? "text-emerald-500" : th.textSub(dark)}`}
+              >
+                {items.filter((it) => it.ready).length} / {items.length}
+              </span>
+            )}
+          </div>
+
+          {selected.statusIdx === 0 && (
+            <button
+              onClick={startPrep}
+              className="w-full bg-amber-500 hover:bg-amber-600 text-white py-3 rounded-xl font-bold active:scale-95 transition-all mb-3"
+            >
+              👨‍🍳 Commencer la préparation
+            </button>
+          )}
+
+          {items.length === 0 ? (
+            <div>
+              <p className={`text-sm italic ${th.textSub(dark)}`}>
+                Pas de détail items (commande ancienne)
+              </p>
+              {selected.statusIdx < 2 && (
+                <button
+                  onClick={forceReady}
+                  className="w-full mt-2 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95"
+                >
+                  Marquer comme prête
+                </button>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {items.map((it, i) => (
+                <button
+                  key={i}
+                  onClick={() => selected.statusIdx <= 1 && toggleItem(i)}
+                  disabled={selected.statusIdx >= 2}
+                  className={`w-full flex items-start gap-3 text-left p-3 rounded-xl border transition-all ${it.ready ? "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500/50" : `${th.border(dark)}`} ${selected.statusIdx >= 2 ? "opacity-70 cursor-not-allowed" : "active:scale-[0.98]"}`}
+                >
+                  <span
+                    className={`mt-0.5 w-5 h-5 rounded border-2 flex items-center justify-center text-xs shrink-0 ${it.ready ? th.checkOn(dark) : th.checkOff(dark)}`}
+                  >
+                    {it.ready ? "✓" : ""}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p
+                      className={`font-semibold text-sm ${it.ready ? "line-through opacity-60" : ""} ${th.text(dark)}`}
+                    >
+                      {it.type === "pizza" ? "🍕" : "🥤"} {it.name}
+                    </p>
+                    {it.size && (
+                      <p className={`text-xs ${th.textSub(dark)}`}>
+                        {it.size === "large"
+                          ? "Ø33"
+                          : it.size === "medium"
+                            ? "Ø29"
+                            : "Ø26"}
+                        {it.crust ? ` · Pâte ${it.crust}` : ""}
+                      </p>
+                    )}
+                    {it.extras?.length > 0 && (
+                      <p className={`text-xs ${th.textSub(dark)}`}>
+                        + {it.extras.join(", ")}
+                      </p>
+                    )}
+                    {it.volume && (
+                      <p className={`text-xs ${th.textSub(dark)}`}>
+                        {it.volume}
+                      </p>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Notif takeaway prête */}
+        {selected.statusIdx === 2 && selected.orderType !== "delivery" && (
+          <button
+            onClick={notifyTakeawayReady}
+            className="w-full mb-3 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-bold active:scale-95 transition-all"
           >
-            📍 Ouvrir l'itinéraire Google Maps
-          </a>
+            📲 Notifier client : "Commande prête"
+          </button>
+        )}
+
+        {/* Stepper visuel (lecture seule) */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <p
+            className={`text-xs font-semibold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
+          >
+            Suivi
+          </p>
+          <div className="space-y-2">
+            {ORDER_STATUS.map((label, i) => {
+              if (selected.orderType !== "delivery" && i >= 3 && i <= 5)
+                return null;
+              if (selected.orderType === "delivery" && i === 6) return null;
+              const done = i <= selected.statusIdx;
+              const active = i === selected.statusIdx;
+              const m = STATUS_META[i];
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-3 ${done ? "" : "opacity-40"}`}
+                >
+                  <span
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-xs ${done ? m.color : "bg-zinc-400"} text-white`}
+                  >
+                    {m.emoji}
+                  </span>
+                  <span
+                    className={`text-sm ${active ? "font-bold" : ""} ${th.text(dark)}`}
+                  >
+                    {label}
+                  </span>
+                  {selected.arrived && i === 4 && (
+                    <span className="ml-auto text-xs text-emerald-500 font-bold">
+                      📍 Sur place
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        {!selected.cancelled && selected.statusIdx >= 1 && (
+          <button
+            onClick={() => setRexFor(selected)}
+            className="w-full mt-2 border-2 border-red-500/40 text-red-500 py-3 rounded-2xl font-bold active:scale-95 hover:bg-red-500/10 transition-all text-sm"
+          >
+            ⚠️ Signaler un incident
+          </button>
+        )}
+        {rexFor && (
+          <RexModal
+            order={rexFor}
+            currentUser={currentUser}
+            dark={dark}
+            showToast={showToast}
+            onClose={() => setRexFor(null)}
+            onSubmitted={() => {
+              setRexFor(null);
+              setSelectedNum(null);
+              refresh();
+            }}
+          />
         )}
       </div>
     );
   }
 
-  // ── Vue principale : onglets + listes ──
-  const currentList =
-    tab === "todo" ? todoOrders : tab === "doing" ? doingOrders : doneOrders;
-  const tabs = [
-    {
-      key: "todo",
-      label: "📦 À prendre",
-      count: todoOrders.length,
-      color: "bg-emerald-500",
-    },
-    {
-      key: "doing",
-      label: "🛵 En cours",
-      count: doingOrders.length,
-      color: "bg-blue-500",
-    },
-    {
-      key: "done",
-      label: "✅ Livrées du jour",
-      count: doneOrders.length,
-      color: "bg-zinc-500",
-    },
-  ];
-
-  const fmtElapsed = (ts) => {
-    const m = Math.floor((Date.now() - (ts || 0)) / 60000);
-    if (m < 1) return "à l'instant";
-    if (m < 60) return `il y a ${m} min`;
-    const h = Math.floor(m / 60);
-    return `il y a ${h}h${(m % 60).toString().padStart(2, "0")}`;
-  };
-
+  // ── Liste ──
   return (
-    <div className="max-w-md mx-auto px-4 pb-20 pt-6">
-      <div className="flex items-center gap-3 mb-6">
+    <div className="max-w-3xl mx-auto px-4 pb-20 pt-6">
+      <div className="flex items-center gap-3 mb-5">
         <button
           onClick={onBack}
           className={`w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${dark ? "bg-zinc-900 border-zinc-700 text-zinc-200" : "bg-white border-gray-200 text-gray-700"}`}
         >
           ←
         </button>
-        <h2 className={`text-2xl font-bold ${th.text(dark)}`}>
-          🛵 Tableau livreur
-        </h2>
-        <button
-          onClick={() => setOrders(DriverOrdersDB.load())}
-          title="Rafraîchir"
-          className={`ml-auto w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${dark ? "bg-zinc-900 border-zinc-700 text-zinc-200" : "bg-white border-gray-200 text-gray-700"}`}
-        >
-          ↻
-        </button>
+        <h2 className={`text-2xl font-bold ${th.text(dark)}`}>💼 Caisse</h2>
+        <span className="ml-auto text-xs bg-amber-400 text-amber-950 font-bold px-3 py-1 rounded-full">
+          {counts.all} cmds
+        </span>
       </div>
 
-      {/* KPIs du jour */}
-      <div className="grid grid-cols-3 gap-2 mb-5">
-        {[
-          {
-            label: "À prendre",
-            value: todoOrders.length,
-            icon: "📦",
-            color: "text-emerald-500",
-          },
-          {
-            label: "En cours",
-            value: inProgress,
-            icon: "🛵",
-            color: "text-blue-500",
-          },
-          {
-            label: "Livrées",
-            value: todayDelivered,
-            icon: "✅",
-            color: "text-zinc-500",
-          },
-        ].map(({ label, value, icon, color }) => (
-          <div
-            key={label}
-            className={`rounded-2xl border p-3 text-center ${th.card(dark)}`}
-          >
-            <div className="text-xl mb-0.5">{icon}</div>
-            <p className={`text-2xl font-black ${color}`}>{value}</p>
-            <p
-              className={`text-[10px] uppercase tracking-wider ${th.textSub(dark)}`}
-            >
-              {label}
-            </p>
-          </div>
-        ))}
-      </div>
-
-      {/* Chiffre du jour */}
-      <div
-        className={`rounded-2xl border p-4 mb-5 flex items-center gap-3 ${th.promoBg(dark)}`}
+      <button
+        onClick={onNewOrder}
+        className="w-full mb-4 bg-emerald-600 hover:bg-emerald-700 text-white py-3.5 rounded-2xl font-bold active:scale-95 transition-all flex items-center justify-center gap-2"
       >
-        <span className="text-3xl">💶</span>
-        <div className="flex-1">
-          <p className={`text-xs ${th.textSub(dark)}`}>
-            Total livré aujourd'hui
-          </p>
-          <p className={`font-black text-xl ${th.text(dark)}`}>
-            {todayRevenue.toFixed(2)} €
-          </p>
-        </div>
-      </div>
+        📞 Nouvelle commande (téléphone / comptoir)
+      </button>
 
       {/* Onglets */}
-      <div
-        className={`rounded-2xl p-1 mb-4 flex gap-1 border ${th.card(dark)}`}
-      >
-        {tabs.map(({ key, label, count, color }) => (
+      <div className="flex gap-2 mb-4 overflow-x-auto">
+        {[
+          { id: "all", label: "Toutes", emoji: "📋" },
+          { id: "todo", label: "À préparer", emoji: "👨‍🍳" },
+          { id: "ready", label: "Prêtes", emoji: "✅" },
+          { id: "later", label: "Suite", emoji: "🛵" },
+        ].map((t) => (
           <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex-1 py-2.5 rounded-xl font-bold text-xs transition-all active:scale-95 flex flex-col items-center gap-0.5
-              ${
-                tab === key
-                  ? "bg-emerald-600 text-white shadow-md"
-                  : dark
-                    ? "text-zinc-400 hover:text-zinc-200"
-                    : "text-gray-500 hover:text-gray-700"
-              }`}
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`shrink-0 px-3 py-2 rounded-xl text-xs font-bold border-2 active:scale-95 transition-all ${tab === t.id ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
           >
-            <span>{label}</span>
-            {count > 0 && (
-              <span
-                className={`text-[10px] ${tab === key ? "bg-white/25 text-white" : color + " font-black"} px-1.5 rounded-full leading-none`}
-              >
-                {count}
-              </span>
-            )}
+            {t.emoji} {t.label} ({counts[t.id]})
           </button>
         ))}
       </div>
 
       {/* Liste */}
-      {currentList.length === 0 && (
-        <div className={`rounded-3xl border p-8 text-center ${th.card(dark)}`}>
-          <span className="text-4xl block mb-3">
-            {tab === "todo" ? "😴" : tab === "doing" ? "🌴" : "📭"}
-          </span>
-          <p className={`font-bold mb-1 ${th.text(dark)}`}>
-            {tab === "todo"
-              ? "Aucune commande à prendre"
-              : tab === "doing"
-                ? "Aucune livraison en cours"
-                : "Aucune livraison terminée aujourd'hui"}
+      <div
+        className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)} ${th.card(dark)}`}
+      >
+        {list.length === 0 ? (
+          <p className={`text-center py-8 text-sm italic ${th.textSub(dark)}`}>
+            Aucune commande
           </p>
-          <p className={`text-sm ${th.textSub(dark)}`}>
-            {tab === "todo"
-              ? "Les nouvelles commandes apparaîtront ici"
-              : "Bonne tournée 🛵"}
+        ) : (
+          list.map((o) => {
+            const meta = STATUS_META[o.statusIdx] || STATUS_META[0];
+            const time = new Date(o.createdAt || Date.now()).toLocaleTimeString(
+              "fr-FR",
+              { hour: "2-digit", minute: "2-digit" },
+            );
+            const summary =
+              Array.isArray(o.items) && o.items.length > 0
+                ? `${o.items.filter((i) => i.type === "pizza").length} 🍕 · ${o.items.filter((i) => i.type === "drink").length} 🥤`
+                : "-";
+            return (
+              <button
+                key={o.number}
+                onClick={() => setSelectedNum(o.number)}
+                className="w-full text-left px-4 py-3 active:bg-zinc-500/10 transition-all"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="text-xs font-mono font-bold tabular-nums shrink-0">
+                    {time}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p
+                      className={`font-bold text-sm truncate ${th.text(dark)}`}
+                    >
+                      #{o.number} · {o.customer}
+                    </p>
+                    <p className={`text-xs ${th.textSub(dark)} truncate`}>
+                      {summary} · {o.orderType === "delivery" ? "🛵" : "🏠"} ·{" "}
+                      {Number(o.total).toFixed(2)} €
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <RiskBanner
+                      phone={o.phone}
+                      address={o.address}
+                      dark={dark}
+                      compact
+                    />
+                    <span
+                      className={`${o.cancelled ? "bg-red-500" : meta.color} text-white text-[10px] font-bold px-2 py-1 rounded-full`}
+                    >
+                      {o.cancelled ? "❌" : meta.emoji}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
+   DRIVER VIEW - interface livreur (appel + GPS + transitions)
+═══════════════════════════════════════════════════ */
+function DriverView({ onBack, dark, showToast }) {
+  const [rexFor, setRexFor] = useState(null);
+  const [currentUser] = useState(() => SessionDB.load());
+  const [tab, setTab] = useState("todo");
+  const [orders, setOrders] = useState(() => DriverOrdersDB.load());
+  const [selectedNum, setSelectedNum] = useState(null);
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const t = setInterval(() => setOrders(DriverOrdersDB.load()), 30000);
+    return () => clearInterval(t);
+  }, []);
+
+  const refresh = () => {
+    setOrders(DriverOrdersDB.load());
+    setTick((t) => t + 1);
+  };
+
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+  const inToday = (ts) => ts >= todayStart.getTime();
+
+  const delivery = orders.filter((o) => o.orderType === "delivery");
+  const todo = delivery.filter((o) => o.statusIdx === 2);
+  const doing = delivery.filter((o) => o.statusIdx >= 3 && o.statusIdx < 5);
+  const done = delivery.filter(
+    (o) => o.statusIdx >= 5 && inToday(o.createdAt || 0),
+  );
+
+  // Stats jour
+  const todayRevenue = done.reduce((s, o) => s + Number(o.total || 0), 0);
+
+  const lists = { todo, doing, done };
+  const counts = { todo: todo.length, doing: doing.length, done: done.length };
+  const list = lists[tab];
+
+  const selected = selectedNum
+    ? orders.find((o) => o.number === selectedNum)
+    : null;
+
+  // Fiche détail
+  if (selected) {
+    const meta = STATUS_META[selected.statusIdx] || STATUS_META[2];
+    const mapQuery = encodeURIComponent(selected.address || "");
+    const items = Array.isArray(selected.items) ? selected.items : [];
+
+    const pickup = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 3 });
+      refresh();
+    };
+    const startRoute = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 4 });
+      refresh();
+    };
+    const markArrived = () => {
+      DriverOrdersDB.update(selected.number, { arrived: true });
+      if (selected.whatsappOptIn && selected.whatsappNumber) {
+        sendWhatsApp(
+          selected.whatsappNumber,
+          `🛵 House Pizza - Bonjour ${selected.customer}, votre livreur est ARRIVÉ devant chez vous (commande #${selected.number}).`,
+        );
+      }
+      refresh();
+    };
+    const markDelivered = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 5 });
+      refresh();
+      setSelectedNum(null);
+      showToast?.("✅ Commande livrée");
+    };
+
+    let actionBtn = null;
+    if (selected.statusIdx === 2) {
+      actionBtn = (
+        <button
+          onClick={pickup}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold active:scale-95"
+        >
+          📦 Prendre la commande
+        </button>
+      );
+    } else if (selected.statusIdx === 3) {
+      actionBtn = (
+        <button
+          onClick={startRoute}
+          className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-2xl font-bold active:scale-95"
+        >
+          🛵 Démarrer la livraison
+        </button>
+      );
+    } else if (selected.statusIdx === 4 && !selected.arrived) {
+      actionBtn = (
+        <button
+          onClick={markArrived}
+          className="w-full bg-amber-500 hover:bg-amber-600 text-white py-4 rounded-2xl font-bold active:scale-95"
+        >
+          📍 Je suis arrivé
+        </button>
+      );
+    } else if (selected.statusIdx === 4 && selected.arrived) {
+      actionBtn = (
+        <button
+          onClick={markDelivered}
+          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-bold active:scale-95"
+        >
+          ✅ Marquer livrée
+        </button>
+      );
+    }
+
+    return (
+      <div className="max-w-md mx-auto px-4 pb-20 pt-6">
+        <div className="flex items-center gap-3 mb-5">
+          <button
+            onClick={() => setSelectedNum(null)}
+            className={`w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${dark ? "bg-zinc-900 border-zinc-700 text-zinc-200" : "bg-white border-gray-200 text-gray-700"}`}
+          >
+            ←
+          </button>
+          <div className="flex-1">
+            <h2 className={`text-xl font-bold ${th.text(dark)}`}>
+              #{selected.number}
+            </h2>
+            <p className={`text-xs ${th.textSub(dark)}`}>
+              {ORDER_STATUS[selected.statusIdx]}
+              {selected.arrived && selected.statusIdx === 4
+                ? " · 📍 Sur place"
+                : ""}
+            </p>
+          </div>
+          <span
+            className={`${meta.color} text-white text-xs font-bold px-3 py-1.5 rounded-full`}
+          >
+            {meta.emoji}
+          </span>
+        </div>
+        <RiskBanner
+          phone={selected.phone}
+          address={selected.address}
+          dark={dark}
+        />
+        {selected.cancelled && (
+          <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
+            <p className="text-sm font-bold">
+              ❌ INCIDENT — {REX_REASON_LABEL(selected.cancelReasonId)}
+            </p>
+          </div>
+        )}
+        {/* Client + call */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <p
+            className={`text-xs font-semibold uppercase tracking-wide mb-1 ${th.textSub(dark)}`}
+          >
+            Client
+          </p>
+          <p className={`font-bold mb-2 ${th.text(dark)}`}>
+            {selected.customer}
+          </p>
+          <a
+            href={`tel:${selected.phone}`}
+            className="block w-full text-center bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-xl font-bold active:scale-95 transition-all"
+          >
+            📞 Appeler {selected.phone}
+          </a>
+        </div>
+
+        {/* Adresse + GPS */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <p
+            className={`text-xs font-semibold uppercase tracking-wide mb-1 ${th.textSub(dark)}`}
+          >
+            Adresse
+          </p>
+          <p className={`text-sm mb-3 ${th.text(dark)}`}>{selected.address}</p>
+          <a
+            href={`https://www.google.com/maps/search/?api=1&query=${mapQuery}`}
+            target="_blank"
+            rel="noreferrer"
+            className="block w-full text-center bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl font-bold active:scale-95 transition-all"
+          >
+            🗺️ Lancer l'itinéraire
+          </a>
+          {selected.notes && (
+            <p className={`text-xs mt-2 italic ${th.textSub(dark)}`}>
+              📝 {selected.notes}
+            </p>
+          )}
+        </div>
+
+        {/* Résumé items (lecture seule) */}
+        {items.length > 0 && (
+          <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide mb-2 ${th.textSub(dark)}`}
+            >
+              Commande
+            </p>
+            <div className="space-y-1.5">
+              {items.map((it, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <span>{it.type === "pizza" ? "🍕" : "🥤"}</span>
+                  <div className="flex-1 text-sm">
+                    <span className={th.text(dark)}>{it.name}</span>
+                    {it.size && (
+                      <span className={th.textSub(dark)}>
+                        {" "}
+                        ·{" "}
+                        {it.size === "large"
+                          ? "Ø33"
+                          : it.size === "medium"
+                            ? "Ø29"
+                            : "Ø26"}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Paiement */}
+        <div
+          className={`rounded-2xl border p-4 mb-3 flex items-center justify-between ${th.card(dark)}`}
+        >
+          <div>
+            <p
+              className={`text-xs font-semibold uppercase tracking-wide ${th.textSub(dark)}`}
+            >
+              À encaisser
+            </p>
+            <p className={`font-bold text-lg ${th.text(dark)}`}>
+              {Number(selected.total).toFixed(2)} €
+            </p>
+          </div>
+          <span className={`text-xs ${th.textSub(dark)}`}>
+            {selected.paymentLabel}
+          </span>
+        </div>
+
+        {actionBtn}
+        {!selected.cancelled && (
+          <button
+            onClick={() => setRexFor(selected)}
+            className="w-full mt-2 border-2 border-red-500/40 text-red-500 py-3 rounded-2xl font-bold active:scale-95 hover:bg-red-500/10 transition-all text-sm"
+          >
+            ⚠️ Signaler un incident
+          </button>
+        )}
+        {rexFor && (
+          <RexModal
+            order={rexFor}
+            currentUser={currentUser}
+            dark={dark}
+            showToast={showToast}
+            onClose={() => setRexFor(null)}
+            onSubmitted={() => {
+              setRexFor(null);
+              setSelectedNum(null);
+              refresh();
+            }}
+          />
+        )}
+      </div>
+    );
+  }
+
+  // Liste
+  return (
+    <div className="max-w-md mx-auto px-4 pb-20 pt-6">
+      <div className="flex items-center gap-3 mb-5">
+        <button
+          onClick={onBack}
+          className={`w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${dark ? "bg-zinc-900 border-zinc-700 text-zinc-200" : "bg-white border-gray-200 text-gray-700"}`}
+        >
+          ←
+        </button>
+        <h2 className={`text-2xl font-bold ${th.text(dark)}`}>🛵 Livreur</h2>
+      </div>
+
+      {/* KPIs jour */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className={`rounded-2xl border p-3 ${th.card(dark)}`}>
+          <p className={`text-xs ${th.textSub(dark)}`}>Livrées</p>
+          <p className={`text-xl font-bold ${th.text(dark)}`}>{counts.done}</p>
+        </div>
+        <div className={`rounded-2xl border p-3 ${th.card(dark)}`}>
+          <p className={`text-xs ${th.textSub(dark)}`}>CA jour</p>
+          <p className={`text-xl font-bold ${th.text(dark)}`}>
+            {todayRevenue.toFixed(0)} €
           </p>
         </div>
-      )}
+      </div>
 
-      <div className="space-y-3">
-        {currentList.map((o) => {
-          const isWA = o.whatsappOptIn;
-          return (
+      <div className="flex gap-2 mb-4">
+        {[
+          { id: "todo", label: "À prendre", emoji: "📦" },
+          { id: "doing", label: "En cours", emoji: "🛵" },
+          { id: "done", label: "Livrées", emoji: "✅" },
+        ].map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex-1 py-2 rounded-xl text-xs font-bold border-2 active:scale-95 transition-all ${tab === t.id ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`}
+          >
+            {t.emoji} {t.label} ({counts[t.id]})
+          </button>
+        ))}
+      </div>
+
+      <div
+        className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)} ${th.card(dark)}`}
+      >
+        {list.length === 0 ? (
+          <p className={`text-center py-8 text-sm italic ${th.textSub(dark)}`}>
+            Aucune commande
+          </p>
+        ) : (
+          list.map((o) => (
             <button
               key={o.number}
               onClick={() => setSelectedNum(o.number)}
-              className={`w-full text-left rounded-3xl border p-4 active:scale-[0.98] transition-all ${th.card(dark)}`}
+              className="w-full text-left px-4 py-3 active:bg-zinc-500/10 transition-all"
             >
-              <div className="flex items-start justify-between mb-2">
-                <div className="min-w-0 flex-1">
-                  <p className={`font-bold text-sm ${th.text(dark)} truncate`}>
-                    #{o.number} · {o.customer}
-                  </p>
-                  <p className={`text-xs mt-0.5 ${th.textSub(dark)} truncate`}>
-                    📍 {o.address || "-"}
-                  </p>
-                </div>
-                <span className="text-sm font-bold text-emerald-500 shrink-0 ml-2">
-                  {Number(o.total).toFixed(2)}€
+              <div className="flex items-center justify-between mb-1">
+                <span className={`font-bold ${th.text(dark)}`}>
+                  #{o.number}
+                </span>
+                <span className={`font-bold ${th.text(dark)}`}>
+                  {Number(o.total).toFixed(2)} €
                 </span>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span
-                  className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
-                    o.statusIdx === 2
-                      ? "bg-amber-500/20 text-amber-600"
-                      : o.statusIdx === 3
-                        ? "bg-blue-500/20 text-blue-600"
-                        : o.statusIdx === 4
-                          ? "bg-indigo-500/20 text-indigo-600"
-                          : "bg-zinc-500/20 text-zinc-500"
-                  }`}
-                >
-                  {ORDER_STATUS[o.statusIdx]}
-                </span>
-                {isWA && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-600">
-                    💬 WhatsApp
+              <p className={`text-sm truncate ${th.textSub(dark)}`}>
+                {o.customer} · {o.phone}
+              </p>
+              <p className={`text-xs truncate ${th.textSub(dark)}`}>
+                📍 {o.address}
+              </p>
+              <div className="mt-1 flex gap-1.5">
+                <RiskBanner
+                  phone={o.phone}
+                  address={o.address}
+                  dark={dark}
+                  compact
+                />
+                {o.cancelled && (
+                  <span className="bg-red-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+                    ❌
                   </span>
                 )}
-                {o._demo && (
-                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-400 text-amber-950">
-                    DÉMO
-                  </span>
-                )}
-                <span className={`text-[10px] ml-auto ${th.textSub(dark)}`}>
-                  {fmtElapsed(o.createdAt)}
-                </span>
               </div>
+              {o.arrived && o.statusIdx === 4 && (
+                <span className="inline-block mt-1 text-[10px] font-bold text-emerald-500">
+                  📍 Sur place - à remettre
+                </span>
+              )}
             </button>
-          );
-        })}
+          ))
+        )}
       </div>
     </div>
   );
@@ -5536,7 +7290,15 @@ function LegalModal({ page, onClose, dark }) {
    FOOTER
 ═══════════════════════════════════════════════════ */
 
-function Footer({ dark, onAdmin, onDriver, user, onTrack, onLegal }) {
+function Footer({
+  dark,
+  onAdmin,
+  onDriver,
+  onCashier,
+  user,
+  onTrack,
+  onLegal,
+}) {
   return (
     <footer className={`${th.footer(dark)} text-white px-6 py-10 mt-12`}>
       <div className="max-w-4xl mx-auto">
@@ -5651,7 +7413,7 @@ function Footer({ dark, onAdmin, onDriver, user, onTrack, onLegal }) {
             🔍 Suivi de commande
           </button>
           {/* Dashboard admin - uniquement housepizzayy.976@gmail.com */}
-          {user?.email?.toLowerCase() === "housepizzayy.976@gmail.com" && (
+          {isAdminEmail(user?.email) && (
             <button
               onClick={onAdmin}
               className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
@@ -5660,12 +7422,21 @@ function Footer({ dark, onAdmin, onDriver, user, onTrack, onLegal }) {
             </button>
           )}
           {/* Interface livreur - uniquement housepizzalivreur@gmail.com */}
-          {user?.email?.toLowerCase() === "housepizzalivreur@gmail.com" && (
+          {isDriverEmail(user?.email) && (
             <button
               onClick={onDriver}
               className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
             >
               🛵 Interface Livreur
+            </button>
+          )}
+          {/* Interface caisse - rôle cashier */}
+          {isCashierEmail(user?.email) && (
+            <button
+              onClick={onCashier}
+              className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
+            >
+              💼 Interface Caisse
             </button>
           )}
         </div>
@@ -5756,14 +7527,32 @@ export default function HousePizza() {
     };
   }, [user, showToast]);
 
-  const { totalRaw, total, pizzaCount } = useMemo(() => {
+  const {
+    totalRaw,
+    total,
+    pizzaCount,
+    deliveryFee,
+    hasPizza,
+    canCheckout,
+    missingForMin,
+  } = useMemo(() => {
     const totalRaw = cart.reduce((s, i) => s + i.price, 0);
     const pizzasOnly = cart.filter((i) => i.type === "pizza");
-    // Promo Margarita gelée - calcul conservé mais non appliqué
-    // const freePizzas = PROMO_PIZZA_ACTIVE ? Math.floor(pizzasOnly.length / PROMO_EVERY) : 0;
-    // const pizzaDiscount = freePizzas * PROMO_PIZZA_VALUE;
-    const total = Math.max(0, totalRaw + DELIVERY_FEE);
-    return { totalRaw, total, pizzaCount: pizzasOnly.length };
+    const hasPizza = pizzasOnly.length > 0;
+    const deliveryFee =
+      cart.length > 0 && !hasPizza ? NO_PIZZA_DELIVERY_FEE : DELIVERY_FEE;
+    const total = Math.max(0, totalRaw + deliveryFee);
+    const canCheckout = totalRaw >= MIN_ORDER_AMOUNT;
+    const missingForMin = Math.max(0, MIN_ORDER_AMOUNT - totalRaw);
+    return {
+      totalRaw,
+      total,
+      pizzaCount: pizzasOnly.length,
+      deliveryFee,
+      hasPizza,
+      canCheckout,
+      missingForMin,
+    };
   }, [cart]);
 
   const addPizza = useCallback(
@@ -5833,10 +7622,14 @@ export default function HousePizza() {
     SessionDB.save(userData);
     setShowAuth(false);
     const email = userData.email?.toLowerCase() || "";
-    if (email === "housepizzayy.976@gmail.com") {
+    const role = getUserRole(email);
+    if (role === "admin") {
       showToast(`👑 Bienvenue admin !`);
       setStep("admin");
-    } else if (email === "housepizzalivreur@gmail.com") {
+    } else if (role === "cashier") {
+      showToast(`💼 Bienvenue, espace caisse`);
+      setStep("cashier");
+    } else if (role === "driver") {
       showToast(`🛵 Bienvenue livreur !`);
       setStep("driver");
     } else {
@@ -6310,6 +8103,10 @@ export default function HousePizza() {
           cart={cart}
           totalRaw={totalRaw}
           total={total}
+          deliveryFee={deliveryFee}
+          hasPizza={hasPizza}
+          canCheckout={canCheckout}
+          missingForMin={missingForMin}
           onRemove={removeItem}
           onBack={() => setStep("menu")}
           onCheckout={handleCheckout}
@@ -6321,6 +8118,7 @@ export default function HousePizza() {
         <CheckoutView
           dark={dark}
           total={total}
+          cart={cart}
           onBack={() => setStep("cart")}
           showToast={showToast}
           user={user}
@@ -6355,8 +8153,21 @@ export default function HousePizza() {
         <AdminView dark={dark} onBack={() => setStep("menu")} />
       )}
 
+      {step === "cashier" && (
+        <CashierView
+          dark={dark}
+          onBack={() => setStep("menu")}
+          onNewOrder={() => setStep("menu")}
+          showToast={showToast}
+        />
+      )}
+
       {step === "driver" && (
-        <DriverView dark={dark} onBack={() => setStep("menu")} />
+        <DriverView
+          dark={dark}
+          onBack={() => setStep("menu")}
+          showToast={showToast}
+        />
       )}
 
       {step === "tracking" && (
@@ -6367,6 +8178,7 @@ export default function HousePizza() {
         <Footer
           dark={dark}
           onAdmin={() => setStep("admin")}
+          onCashier={() => setStep("cashier")}
           onDriver={() => setStep("driver")}
           onTrack={() => setStep("tracking")}
           onLegal={(page) => setLegalPage(page)}
