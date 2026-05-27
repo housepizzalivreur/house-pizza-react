@@ -510,11 +510,17 @@ const RolesDB = {
 const REX_REASONS = [
   { id: "unreachable", label: "Client injoignable / introuvable" },
   { id: "noshow", label: "Client absent au retrait" },
-  { id: "order_error", label: "Erreur de commande" },
+  {
+    id: "order_error",
+    label: "Erreur de commande (pizzeria)",
+    pizzeriaFault: true,
+  },
   { id: "other", label: "Autre (préciser)" },
 ];
 const REX_REASON_LABEL = (id) =>
   REX_REASONS.find((r) => r.id === id)?.label || id;
+const isPizzeriaFault = (reasonId) =>
+  !!REX_REASONS.find((r) => r.id === reasonId)?.pizzeriaFault;
 
 const RexDB = {
   KEY: "hp_rex",
@@ -568,44 +574,127 @@ const normAddress = (a) =>
     .trim()
     .replace(/\s+/g, " ")
     .replace(/[.,;]/g, "");
-
+/* ═══════════════════════════════════════════════════
+   BLACKLIST OVERRIDE - réhabilitation / blocage manuel
+   Stockage : localStorage "hp_blacklist_override"
+   { whitelist: [{phone, address, customer, by, at, note?}],
+     blacklist: [{phone, address, customer, by, at, note?}] }
+═══════════════════════════════════════════════════ */
+const BlacklistOverrideDB = {
+  KEY: "hp_blacklist_override",
+  load() {
+    try {
+      const raw = JSON.parse(localStorage.getItem(this.KEY) || "{}");
+      return {
+        whitelist: Array.isArray(raw.whitelist) ? raw.whitelist : [],
+        blacklist: Array.isArray(raw.blacklist) ? raw.blacklist : [],
+      };
+    } catch {
+      return { whitelist: [], blacklist: [] };
+    }
+  },
+  _save(d) {
+    try {
+      localStorage.setItem(this.KEY, JSON.stringify(d));
+    } catch {}
+  },
+  _matches(entry, phone, address) {
+    const np = normPhone(phone),
+      na = normAddress(address);
+    return (
+      (np && normPhone(entry.phone) === np) ||
+      (na && normAddress(entry.address) === na)
+    );
+  },
+  isWhitelisted(phone, address) {
+    return this.load().whitelist.some((w) => this._matches(w, phone, address));
+  },
+  isBlacklisted(phone, address) {
+    return this.load().blacklist.some((b) => this._matches(b, phone, address));
+  },
+  whitelistAdd(entry, by) {
+    const d = this.load();
+    d.whitelist = d.whitelist.filter(
+      (w) => !this._matches(w, entry.phone, entry.address),
+    );
+    // un client réhabilité ne peut pas être en blacklist manuelle simultanée
+    d.blacklist = d.blacklist.filter(
+      (b) => !this._matches(b, entry.phone, entry.address),
+    );
+    d.whitelist.unshift({ ...entry, by: by || "?", at: Date.now() });
+    this._save(d);
+  },
+  whitelistRemove(phone, address) {
+    const d = this.load();
+    d.whitelist = d.whitelist.filter((w) => !this._matches(w, phone, address));
+    this._save(d);
+  },
+  blacklistAdd(entry, by) {
+    const d = this.load();
+    d.blacklist = d.blacklist.filter(
+      (b) => !this._matches(b, entry.phone, entry.address),
+    );
+    d.whitelist = d.whitelist.filter(
+      (w) => !this._matches(w, entry.phone, entry.address),
+    );
+    d.blacklist.unshift({ ...entry, by: by || "?", at: Date.now() });
+    this._save(d);
+  },
+  blacklistRemove(phone, address) {
+    const d = this.load();
+    d.blacklist = d.blacklist.filter((b) => !this._matches(b, phone, address));
+    this._save(d);
+  },
+};
 const BlacklistDB = {
-  // Renvoie le nombre d'incidents pour un (phone, address)
+  // Renvoie le nombre d'incidents IMPUTABLES AU CLIENT (exclut erreurs pizzeria)
   countIncidents(phone, address) {
     const rex = RexDB.load();
     const np = normPhone(phone);
     const na = normAddress(address);
     if (!np && !na) return 0;
     return rex.filter((r) => {
+      if (isPizzeriaFault(r.reason)) return false; // erreur interne → pas de conséquence client
       const matchPhone = np && normPhone(r.phone) === np;
       const matchAddr = na && normAddress(r.address) === na;
       return matchPhone || matchAddr;
     }).length;
   },
-  // 0 = clean, 1 = flagged, 2+ = blocked
+  // 0 = clean, 1 = flagged, 2+ = blocked. Override manuel prioritaire.
   riskLevel(phone, address) {
+    if (BlacklistOverrideDB.isWhitelisted(phone, address)) return 0;
+    if (BlacklistOverrideDB.isBlacklisted(phone, address)) return 2;
     const c = this.countIncidents(phone, address);
     if (c === 0) return 0;
     if (c === 1) return 1;
     return 2;
   },
+  // Liste des incidents affichables (RiskBanner) — sans les erreurs pizzeria
   incidents(phone, address) {
     const rex = RexDB.load();
     const np = normPhone(phone);
     const na = normAddress(address);
     return rex.filter((r) => {
+      if (isPizzeriaFault(r.reason)) return false;
       const matchPhone = np && normPhone(r.phone) === np;
       const matchAddr = na && normAddress(r.address) === na;
       return matchPhone || matchAddr;
     });
   },
-  // Regroupe les incidents par client (clé = phone normalisé)
+  // Regroupe par client : exclut erreurs pizzeria + whitelist, intègre blacklist manuels
   byCustomer() {
     const rex = RexDB.load();
+    const { whitelist, blacklist } = BlacklistOverrideDB.load();
+    const wlKeys = new Set(
+      whitelist
+        .map((w) => normPhone(w.phone) || normAddress(w.address))
+        .filter(Boolean),
+    );
     const map = new Map();
     for (const r of rex) {
+      if (isPizzeriaFault(r.reason)) continue;
       const key = normPhone(r.phone) || normAddress(r.address);
-      if (!key) continue;
+      if (!key || wlKeys.has(key)) continue;
       if (!map.has(key)) {
         map.set(key, {
           phone: r.phone,
@@ -613,11 +702,29 @@ const BlacklistDB = {
           customer: r.customer,
           count: 0,
           incidents: [],
+          manualBlock: false,
         });
       }
       const e = map.get(key);
       e.count++;
       e.incidents.push(r);
+    }
+    // Blocages manuels (count forcé ≥2 pour apparaître "bloqué")
+    for (const b of blacklist) {
+      const key = normPhone(b.phone) || normAddress(b.address);
+      if (!key || wlKeys.has(key)) continue;
+      if (map.has(key)) {
+        map.get(key).manualBlock = true;
+      } else {
+        map.set(key, {
+          phone: b.phone,
+          address: b.address,
+          customer: b.customer,
+          count: 2,
+          incidents: [],
+          manualBlock: true,
+        });
+      }
     }
     return [...map.values()].sort((a, b) => b.count - a.count);
   },
@@ -4373,11 +4480,21 @@ function CheckoutView({
 function ConfirmationView({ orderData, onBack, dark }) {
   const [statusIdx, setStatusIdx] = useState(0);
 
+  // Parcours conditionnel selon le type :
+  //  - delivery : 0 → 1 → 2 → 3 → 4 → 5 (Livrée)
+  //  - takeaway : 0 → 1 → 2 → 6 (Retirée)
+  const steps = useMemo(
+    () =>
+      orderData.orderType === "delivery" ? [0, 1, 2, 3, 4, 5] : [0, 1, 2, 6],
+    [orderData.orderType],
+  );
+
   useEffect(() => {
-    if (statusIdx >= ORDER_STATUS.length - 1) return;
-    const t = setTimeout(() => setStatusIdx((i) => i + 1), 8000);
+    const pos = steps.indexOf(statusIdx);
+    if (pos === -1 || pos >= steps.length - 1) return;
+    const t = setTimeout(() => setStatusIdx(steps[pos + 1]), 8000);
     return () => clearTimeout(t);
-  }, [statusIdx]);
+  }, [statusIdx, steps]);
 
   // Persister la progression dans hp_orders pour que le driver dashboard et
   // le suivi par numéro reflètent l'état actuel
@@ -4466,11 +4583,12 @@ function ConfirmationView({ orderData, onBack, dark }) {
           📍 Suivi en temps réel
         </h3>
         <div className="space-y-3">
-          {ORDER_STATUS.map((s, i) => {
+          {steps.map((i) => {
+            const s = ORDER_STATUS[i];
             const done = i <= statusIdx;
             const active = i === statusIdx;
             return (
-              <div key={s} className="flex items-center gap-3">
+              <div key={i} className="flex items-center gap-3">
                 <div
                   className={`w-7 h-7 rounded-full border-2 flex items-center justify-center shrink-0 text-xs font-bold transition-all
                   ${done ? "border-emerald-500 bg-emerald-500 text-white" : dark ? "border-zinc-600 text-zinc-600" : "border-gray-300 text-gray-300"}`}
@@ -5129,18 +5247,61 @@ function ExportPanel({ dark }) {
 function IncidentsPanel({ dark }) {
   const [tab, setTab] = useState("incidents");
   const [rex, setRex] = useState(() => RexDB.list());
+  const [override, setOverride] = useState(() => BlacklistOverrideDB.load());
   const [, setTick] = useState(0);
+  const [manualForm, setManualForm] = useState({
+    phone: "",
+    customer: "",
+    address: "",
+  });
+  const [manualErr, setManualErr] = useState("");
+  const currentUser = SessionDB.load();
+
+  const refresh = () => {
+    setRex(RexDB.list());
+    setOverride(BlacklistOverrideDB.load());
+    setTick((x) => x + 1);
+  };
 
   useEffect(() => {
-    const t = setInterval(() => {
-      setRex(RexDB.list());
-      setTick((x) => x + 1);
-    }, 10000);
+    const t = setInterval(refresh, 10000);
     return () => clearInterval(t);
   }, []);
 
   const customers = BlacklistDB.byCustomer();
   const blocked = customers.filter((c) => c.count >= 2);
+
+  const rehabilitate = (c) => {
+    BlacklistOverrideDB.whitelistAdd(
+      { phone: c.phone, address: c.address, customer: c.customer },
+      currentUser?.email,
+    );
+    refresh();
+  };
+  const reblock = (w) => {
+    BlacklistOverrideDB.whitelistRemove(w.phone, w.address);
+    refresh();
+  };
+  const removeManualBlock = (b) => {
+    BlacklistOverrideDB.blacklistRemove(b.phone, b.address);
+    refresh();
+  };
+  const submitManualBlock = () => {
+    const phone = manualForm.phone.trim();
+    const customer = manualForm.customer.trim();
+    const address = manualForm.address.trim();
+    if (!phone && !address) {
+      setManualErr("Téléphone ou adresse requis");
+      return;
+    }
+    BlacklistOverrideDB.blacklistAdd(
+      { phone, customer, address },
+      currentUser?.email,
+    );
+    setManualForm({ phone: "", customer: "", address: "" });
+    setManualErr("");
+    refresh();
+  };
 
   return (
     <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
@@ -5159,7 +5320,8 @@ function IncidentsPanel({ dark }) {
       <div className="flex gap-2 mb-3">
         {[
           { id: "incidents", label: "📋 Incidents" },
-          { id: "customers", label: "👥 Clients à risque" },
+          { id: "customers", label: "👥 À risque" },
+          { id: "manual", label: "🛡️ Manuel" },
         ].map((t) => (
           <button
             key={t.id}
@@ -5180,69 +5342,243 @@ function IncidentsPanel({ dark }) {
           <div
             className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)} max-h-96 overflow-y-auto`}
           >
-            {rex.map((r) => (
-              <div key={r.id} className="px-4 py-3">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xs font-mono">
-                    {new Date(r.createdAt).toLocaleString("fr-FR", {
-                      day: "2-digit",
-                      month: "2-digit",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  <span className="text-xs bg-red-500 text-white font-bold px-2 py-0.5 rounded-full">
-                    #{r.orderNumber}
-                  </span>
-                  <span className={`ml-auto text-xs ${th.textSub(dark)}`}>
-                    {r.createdBy}
-                  </span>
-                </div>
-                <p className={`text-sm font-bold ${th.text(dark)}`}>
-                  {r.customer || "—"} · {r.phone || "—"}
-                </p>
-                <p className={`text-xs ${th.textSub(dark)} truncate`}>
-                  {r.address}
-                </p>
-                <p className="text-sm mt-1 text-red-500 font-semibold">
-                  {REX_REASON_LABEL(r.reason)}
-                  {r.customReason ? ` — ${r.customReason}` : ""}
-                </p>
-                {r.comment && (
-                  <p className={`text-xs italic mt-1 ${th.textSub(dark)}`}>
-                    💬 {r.comment}
+            {rex.map((r) => {
+              const fault = isPizzeriaFault(r.reason);
+              return (
+                <div key={r.id} className="px-4 py-3">
+                  <div className="flex items-center gap-2 mb-1 flex-wrap">
+                    <span className="text-xs font-mono">
+                      {new Date(r.createdAt).toLocaleString("fr-FR", {
+                        day: "2-digit",
+                        month: "2-digit",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <span className="text-xs bg-red-500 text-white font-bold px-2 py-0.5 rounded-full">
+                      #{r.orderNumber}
+                    </span>
+                    {fault && (
+                      <span className="text-[10px] bg-amber-500 text-white font-bold px-2 py-0.5 rounded-full">
+                        🍕 Erreur interne — sans conséquence client
+                      </span>
+                    )}
+                    <span className={`ml-auto text-xs ${th.textSub(dark)}`}>
+                      {r.createdBy}
+                    </span>
+                  </div>
+                  <p className={`text-sm font-bold ${th.text(dark)}`}>
+                    {r.customer || "—"} · {r.phone || "—"}
                   </p>
-                )}
+                  <p className={`text-xs ${th.textSub(dark)} truncate`}>
+                    {r.address}
+                  </p>
+                  <p className="text-sm mt-1 text-red-500 font-semibold">
+                    {REX_REASON_LABEL(r.reason)}
+                    {r.customReason ? ` — ${r.customReason}` : ""}
+                  </p>
+                  {r.comment && (
+                    <p className={`text-xs italic mt-1 ${th.textSub(dark)}`}>
+                      💬 {r.comment}
+                    </p>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )
+      ) : tab === "customers" ? (
+        customers.length === 0 ? (
+          <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+            Aucun client à risque 🎉
+          </p>
+        ) : (
+          <div
+            className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+          >
+            {customers.map((c, i) => (
+              <div
+                key={i}
+                className="px-4 py-3 flex items-center gap-3 flex-wrap"
+              >
+                <span
+                  className={`shrink-0 ${c.count >= 2 ? "bg-red-500" : "bg-amber-500"} text-white text-xs font-bold px-2 py-1 rounded-full`}
+                >
+                  {c.count >= 2 ? "🚫" : "⚠️"} {c.count}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p className={`font-bold text-sm truncate ${th.text(dark)}`}>
+                    {c.customer || "—"}
+                    {c.manualBlock && (
+                      <span className="ml-2 text-[10px] font-bold text-red-500">
+                        🛡️ MANUEL
+                      </span>
+                    )}
+                  </p>
+                  <p className={`text-xs ${th.textSub(dark)}`}>{c.phone}</p>
+                  <p className={`text-xs truncate ${th.textSub(dark)}`}>
+                    📍 {c.address}
+                  </p>
+                </div>
+                <button
+                  onClick={() => {
+                    const verb =
+                      c.count >= 2 ? "Débloquer" : "Effacer le signalement de";
+                    if (
+                      window.confirm(
+                        `${verb} ${c.customer || c.phone} ? Le client repart avec une ardoise vierge.`,
+                      )
+                    ) {
+                      rehabilitate(c);
+                    }
+                  }}
+                  className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-3 py-1.5 rounded-full active:scale-95 transition-all shrink-0"
+                >
+                  {c.count >= 2 ? "✅ Débloquer" : "✅ Effacer"}
+                </button>
               </div>
             ))}
           </div>
         )
-      ) : customers.length === 0 ? (
-        <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
-          Aucun client à risque 🎉
-        </p>
       ) : (
-        <div
-          className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
-        >
-          {customers.map((c, i) => (
-            <div key={i} className="px-4 py-3 flex items-center gap-3">
-              <span
-                className={`shrink-0 ${c.count >= 2 ? "bg-red-500" : "bg-amber-500"} text-white text-xs font-bold px-2 py-1 rounded-full`}
+        // ─── Onglet Manuel ───
+        <div className="space-y-4">
+          {/* Form ajout manuel blacklist */}
+          <div className={`rounded-2xl border p-3 ${th.border(dark)}`}>
+            <p className={`text-xs font-bold mb-2 ${th.text(dark)}`}>
+              ➕ Bloquer manuellement un client
+            </p>
+            <div className="grid grid-cols-1 gap-2">
+              <input
+                type="text"
+                placeholder="Téléphone *"
+                value={manualForm.phone}
+                onChange={(e) => {
+                  setManualForm({ ...manualForm, phone: e.target.value });
+                  setManualErr("");
+                }}
+                style={{ fontSize: "16px" }}
+                className={`border-2 rounded-xl px-3 py-2 outline-none ${th.input(dark)}`}
+              />
+              <input
+                type="text"
+                placeholder="Nom (optionnel)"
+                value={manualForm.customer}
+                onChange={(e) =>
+                  setManualForm({ ...manualForm, customer: e.target.value })
+                }
+                style={{ fontSize: "16px" }}
+                className={`border-2 rounded-xl px-3 py-2 outline-none ${th.input(dark)}`}
+              />
+              <input
+                type="text"
+                placeholder="Adresse (optionnel)"
+                value={manualForm.address}
+                onChange={(e) =>
+                  setManualForm({ ...manualForm, address: e.target.value })
+                }
+                style={{ fontSize: "16px" }}
+                className={`border-2 rounded-xl px-3 py-2 outline-none ${th.input(dark)}`}
+              />
+              {manualErr && <p className="text-red-500 text-xs">{manualErr}</p>}
+              <button
+                onClick={submitManualBlock}
+                className="bg-red-500 hover:bg-red-600 text-white font-bold py-2 rounded-xl active:scale-95 transition-all text-sm"
               >
-                {c.count >= 2 ? "🚫" : "⚠️"} {c.count}
-              </span>
-              <div className="flex-1 min-w-0">
-                <p className={`font-bold text-sm truncate ${th.text(dark)}`}>
-                  {c.customer || "—"}
-                </p>
-                <p className={`text-xs ${th.textSub(dark)}`}>{c.phone}</p>
-                <p className={`text-xs truncate ${th.textSub(dark)}`}>
-                  📍 {c.address}
-                </p>
-              </div>
+                🚫 Bloquer
+              </button>
             </div>
-          ))}
+          </div>
+
+          {/* Liste blacklist manuels */}
+          <div>
+            <p className={`text-xs font-bold mb-2 ${th.text(dark)}`}>
+              🚫 Bloqués manuellement ({override.blacklist.length})
+            </p>
+            {override.blacklist.length === 0 ? (
+              <p className={`text-xs italic ${th.textSub(dark)}`}>Aucun</p>
+            ) : (
+              <div
+                className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+              >
+                {override.blacklist.map((b, i) => (
+                  <div key={i} className="px-3 py-2 flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className={`text-sm font-bold truncate ${th.text(dark)}`}
+                      >
+                        {b.customer || "—"}
+                      </p>
+                      <p className={`text-xs ${th.textSub(dark)}`}>
+                        {b.phone || "—"} {b.address ? `· ${b.address}` : ""}
+                      </p>
+                      <p className={`text-[10px] ${th.textSub(dark)}`}>
+                        par {b.by} ·{" "}
+                        {new Date(b.at).toLocaleDateString("fr-FR")}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Débloquer ${b.customer || b.phone} ? Le client repart avec une ardoise vierge.`,
+                          )
+                        ) {
+                          rehabilitate(b);
+                        }
+                      }}
+                      className="text-xs bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-3 py-1.5 rounded-full active:scale-95 transition-all"
+                    >
+                      ✅ Débloquer
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Liste whitelist (réhabilités) */}
+          <div>
+            <p className={`text-xs font-bold mb-2 ${th.text(dark)}`}>
+              ✅ Réhabilités ({override.whitelist.length})
+            </p>
+            {override.whitelist.length === 0 ? (
+              <p className={`text-xs italic ${th.textSub(dark)}`}>Aucun</p>
+            ) : (
+              <div
+                className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
+              >
+                {override.whitelist.map((w, i) => (
+                  <div key={i} className="px-3 py-2 flex items-center gap-2">
+                    <div className="flex-1 min-w-0">
+                      <p
+                        className={`text-sm font-bold truncate ${th.text(dark)}`}
+                      >
+                        {w.customer || "—"}
+                      </p>
+                      <p className={`text-xs ${th.textSub(dark)}`}>
+                        {w.phone || "—"} {w.address ? `· ${w.address}` : ""}
+                      </p>
+                      <p className={`text-[10px] ${th.textSub(dark)}`}>
+                        par {w.by} ·{" "}
+                        {new Date(w.at).toLocaleDateString("fr-FR")}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (window.confirm("Re-bloquer ce client ?")) {
+                          reblock(w);
+                        }
+                      }}
+                      className="text-xs border-2 border-red-500/40 text-red-500 font-bold px-2 py-1 rounded-full active:scale-95 hover:bg-red-500/10"
+                    >
+                      🚫 Re-bloquer
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -6278,14 +6614,27 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
           )}
         </div>
 
-        {/* Notif takeaway prête */}
-        {selected.statusIdx === 2 && selected.orderType !== "delivery" && (
-          <button
-            onClick={notifyTakeawayReady}
-            className="w-full mb-3 bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-bold active:scale-95 transition-all"
-          >
-            📲 Notifier client : "Commande prête"
-          </button>
+        {/* Actions takeaway */}
+        {selected.orderType !== "delivery" && selected.statusIdx === 2 && (
+          <div className="space-y-2 mb-3">
+            <button
+              onClick={notifyTakeawayReady}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-3 rounded-2xl font-bold active:scale-95 transition-all"
+            >
+              📲 Notifier client : "Commande prête"
+            </button>
+            <button
+              onClick={() => {
+                DriverOrdersDB.update(selected.number, { statusIdx: 6 });
+                refresh();
+                setSelectedNum(null);
+                showToast?.("✅ Commande retirée");
+              }}
+              className="w-full bg-emerald-700 hover:bg-emerald-800 text-white py-3 rounded-2xl font-bold active:scale-95 transition-all"
+            >
+              ✅ Marquer comme retirée
+            </button>
+          </div>
         )}
 
         {/* Stepper visuel (lecture seule) */}
@@ -6296,36 +6645,41 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
             Suivi
           </p>
           <div className="space-y-2">
-            {ORDER_STATUS.map((label, i) => {
-              if (selected.orderType !== "delivery" && i >= 3 && i <= 5)
-                return null;
-              if (selected.orderType === "delivery" && i === 6) return null;
-              const done = i <= selected.statusIdx;
-              const active = i === selected.statusIdx;
-              const m = STATUS_META[i];
-              return (
-                <div
-                  key={i}
-                  className={`flex items-center gap-3 ${done ? "" : "opacity-40"}`}
-                >
-                  <span
-                    className={`w-7 h-7 rounded-full flex items-center justify-center text-xs ${done ? m.color : "bg-zinc-400"} text-white`}
+            {(selected.orderType === "delivery"
+              ? [0, 1, 2, 3, 4, 5] // Livraison : tout le parcours
+              : [0, 1, 2, 6]
+            ) // Takeaway : prépa → prêt → retiré
+              .map((i) => {
+                const label = ORDER_STATUS[i];
+                const done = selected.cancelled
+                  ? false
+                  : i <= selected.statusIdx ||
+                    (i === 6 && selected.statusIdx === 6);
+                const active = i === selected.statusIdx;
+                const m = STATUS_META[i];
+                return (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-3 ${done ? "" : "opacity-40"}`}
                   >
-                    {m.emoji}
-                  </span>
-                  <span
-                    className={`text-sm ${active ? "font-bold" : ""} ${th.text(dark)}`}
-                  >
-                    {label}
-                  </span>
-                  {selected.arrived && i === 4 && (
-                    <span className="ml-auto text-xs text-emerald-500 font-bold">
-                      📍 Sur place
+                    <span
+                      className={`w-7 h-7 rounded-full flex items-center justify-center text-xs ${done ? m.color : "bg-zinc-400"} text-white`}
+                    >
+                      {m.emoji}
                     </span>
-                  )}
-                </div>
-              );
-            })}
+                    <span
+                      className={`text-sm ${active ? "font-bold" : ""} ${th.text(dark)}`}
+                    >
+                      {label}
+                    </span>
+                    {selected.arrived && i === 4 && (
+                      <span className="ml-auto text-xs text-emerald-500 font-bold">
+                        📍 Sur place
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
           </div>
         </div>
         {!selected.cancelled && selected.statusIdx >= 1 && (
@@ -6493,8 +6847,16 @@ function DriverView({ onBack, dark, showToast }) {
   // Stats jour
   const todayRevenue = done.reduce((s, o) => s + Number(o.total || 0), 0);
 
-  const lists = { todo, doing, done };
-  const counts = { todo: todo.length, doing: doing.length, done: done.length };
+  const upcoming = orders.filter(
+    (o) => o.orderType === "delivery" && o.statusIdx < 2 && !o.cancelled,
+  );
+  const lists = { upcoming, todo, doing, done };
+  const counts = {
+    upcoming: upcoming.length,
+    todo: todo.length,
+    doing: doing.length,
+    done: done.length,
+  };
   const list = lists[tab];
 
   const selected = selectedNum
@@ -6533,7 +6895,14 @@ function DriverView({ onBack, dark, showToast }) {
     };
 
     let actionBtn = null;
-    if (selected.statusIdx === 2) {
+    const isReadOnly = selected.statusIdx < 2;
+    if (isReadOnly) {
+      actionBtn = (
+        <div className="w-full bg-zinc-500/20 text-zinc-500 py-4 rounded-2xl font-bold text-center text-sm">
+          🔒 En attente — la caisse prépare la commande
+        </div>
+      );
+    } else if (selected.statusIdx === 2) {
       actionBtn = (
         <button
           onClick={pickup}
@@ -6701,6 +7070,50 @@ function DriverView({ onBack, dark, showToast }) {
           </span>
         </div>
 
+        {/* Stepper - le livreur voit tout, même les étapes caisse */}
+        <div className={`rounded-2xl border p-4 mb-3 ${th.card(dark)}`}>
+          <p
+            className={`text-xs font-semibold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
+          >
+            Suivi
+          </p>
+          <div className="space-y-2">
+            {[0, 1, 2, 3, 4, 5].map((i) => {
+              const done = !selected.cancelled && i <= selected.statusIdx;
+              const active = i === selected.statusIdx;
+              const m = STATUS_META[i];
+              const isMyStep = i >= 2;
+              return (
+                <div
+                  key={i}
+                  className={`flex items-center gap-3 ${done ? "" : "opacity-40"}`}
+                >
+                  <span
+                    className={`w-7 h-7 rounded-full flex items-center justify-center text-xs ${done ? m.color : "bg-zinc-400"} text-white`}
+                  >
+                    {m.emoji}
+                  </span>
+                  <span
+                    className={`text-sm ${active ? "font-bold" : ""} ${th.text(dark)}`}
+                  >
+                    {ORDER_STATUS[i]}
+                  </span>
+                  {!isMyStep && (
+                    <span className={`ml-auto text-[10px] ${th.textSub(dark)}`}>
+                      👨‍🍳 caisse
+                    </span>
+                  )}
+                  {selected.arrived && i === 4 && (
+                    <span className="ml-auto text-xs text-emerald-500 font-bold">
+                      📍 Sur place
+                    </span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
         {actionBtn}
         {!selected.cancelled && (
           <button
@@ -6757,6 +7170,7 @@ function DriverView({ onBack, dark, showToast }) {
 
       <div className="flex gap-2 mb-4">
         {[
+          { id: "upcoming", label: "À venir", emoji: "⏳" },
           { id: "todo", label: "À prendre", emoji: "📦" },
           { id: "doing", label: "En cours", emoji: "🛵" },
           { id: "done", label: "Livrées", emoji: "✅" },
@@ -6971,11 +7385,15 @@ function OrderTrackingView({ dark, onBack }) {
               État de la commande
             </p>
             <div className="space-y-2">
-              {ORDER_STATUS.map((s, i) => {
+              {(orderResult.orderType === "delivery"
+                ? [0, 1, 2, 3, 4, 5]
+                : [0, 1, 2, 6]
+              ).map((i) => {
+                const s = ORDER_STATUS[i];
                 const done = i <= (orderResult.statusIdx ?? 0);
                 const current = i === (orderResult.statusIdx ?? 0);
                 return (
-                  <div key={s} className="flex items-center gap-3">
+                  <div key={i} className="flex items-center gap-3">
                     <div
                       className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold shrink-0 transition-all
                         ${
