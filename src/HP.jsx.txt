@@ -37,15 +37,8 @@ import cocaCola2Img from "./assets/drinks/coca2.png";
 import stoneyGinger2lImg from "./assets/drinks/stoneyginger2l.png";
 import caribiaImg from "./assets/drinks/caribia.png";
 
-import {
-  getOrders,
-  getOrderByNumber,
-  createOrder,
-  updateOrder,
-  updateOrderByNumber,
-  subscribeOrders,
-  paymentLabelFor,
-} from "./lib/db";
+import { getOrders } from "./lib/db";
+import { updateOrder } from "./lib/db";
 
 /* ═══════════════════════════════════════════════════
    DATA
@@ -4005,11 +3998,12 @@ function CheckoutView({
     onSuccess({
       number: generateOrderNumber(),
       total: finalTotal,
-      subtotal: finalTotal + (promoResult?.valid ? promoResult.discount : 0),
       orderType,
       paymentMethod,
+      paymentLabel,
       promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
       promoDiscount: promoResult?.valid ? promoResult.discount : 0,
+      // Données client (utilisées par tracking, driver dashboard, notif WhatsApp)
       customer: sanitize(form.name),
       phone: form.phone,
       address:
@@ -4017,9 +4011,10 @@ function CheckoutView({
           ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
           : "",
       notes: sanitize(form.notes),
-      // Opt-in WhatsApp : persisté via marqueur dans `notes` (cf lib/db.js)
+      // Opt-in WhatsApp (consentement explicite RGPD)
       whatsappOptIn: wantsWhatsApp,
       whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
+      // Snapshot du panier pour la checklist préparation côté caisse
       items: cart ? cart.map((it, i) => ({ ...it, idx: i, ready: false })) : [],
     });
   };
@@ -4691,17 +4686,76 @@ function ConfirmationView({ orderData, onBack, dark }) {
     return () => clearTimeout(t);
   }, [statusIdx, steps]);
 
-  // Persister la progression côté Supabase
+  // Persister la progression dans hp_orders +
+  // synchroniser Supabase
+
   useEffect(() => {
-    if (!orderData.id) return; // commande pas encore créée en DB
-    (async () => {
+    console.log("SYNC EFFECT RUN:", statusIdx, orderData.number);
+
+    async function syncOrder() {
       try {
-        await updateOrder(orderData.id, { statusIdx });
+        const orders = await getOrders();
+
+        console.log("ALL DB ORDERS:", orders);
+
+        console.log("ORDERS FOUND:", orders.length);
+
+        const dbOrder = orders.find(
+          (o) => String(o.order_number) === String(orderData.number),
+        );
+
+        console.log("DB ORDER:", dbOrder);
+
+        // garder localStorage temporairement
+
+        const localOrders = JSON.parse(
+          localStorage.getItem("hp_orders") || "[]",
+        );
+
+        const idx = localOrders.findIndex((o) => o.number === orderData.number);
+
+        console.log("LOCAL IDX:", idx);
+
+        if (idx !== -1) {
+          localOrders[idx] = {
+            ...localOrders[idx],
+
+            statusIdx,
+
+            updatedAt: Date.now(),
+          };
+
+          localStorage.setItem(
+            "hp_orders",
+
+            JSON.stringify(localOrders),
+          );
+        }
+
+        if (dbOrder) {
+          console.log("UPDATE DB:", dbOrder.id, statusIdx);
+
+          await updateOrder(
+            dbOrder.id,
+
+            {
+              status: statusIdx,
+
+              updated_at: new Date().toISOString(),
+            },
+          );
+
+          console.log("SUPABASE UPDATED");
+        } else {
+          console.log("NO DB ORDER MATCH");
+        }
       } catch (err) {
         console.error("SYNC ERROR:", err);
       }
-    })();
-  }, [statusIdx, orderData.id]);
+    }
+
+    syncOrder();
+  }, [statusIdx, orderData.number]);
 
   const eta =
     orderData.orderType === "delivery" ? "30 – 45 min" : "15 – 20 min";
@@ -4974,22 +5028,23 @@ function OrdersOverviewPanel({ dark }) {
   const [tab, setTab] = useState("active");
 
   useEffect(() => {
-    let cancelled = false;
     async function loadOrders() {
       try {
         const data = await getOrders();
-        if (cancelled) return;
+
+        console.log("CASHIER ORDERS:", data.length);
+
         setOrders(data);
       } catch (err) {
         console.error(err);
       }
     }
+
     loadOrders();
-    const unsub = subscribeOrders(loadOrders);
-    return () => {
-      cancelled = true;
-      unsub();
-    };
+
+    const t = setInterval(loadOrders, 10000);
+
+    return () => clearInterval(t);
   }, []);
 
   const todayStart = new Date();
@@ -5005,7 +5060,7 @@ function OrdersOverviewPanel({ dark }) {
     (o) => o.statusIdx >= 5 && !o.cancelled && inToday(o.createdAt || 0),
   );
   const cancelledToday = orders.filter(
-    (o) => o.cancelled && inToday(o.updatedAt || o.createdAt || 0),
+    (o) => o.cancelled && inToday(o.cancelledAt || o.createdAt || 0),
   );
 
   // KPIs jour
@@ -5243,8 +5298,8 @@ function ExportPanel({ dark }) {
   const [period, setPeriod] = useState("30d");
   const tag = () => `${new Date().toISOString().slice(0, 10)}_${period}`;
 
-  const exportOrders = async () => {
-    const rows = periodFilter(await DriverOrdersDB.load(), period).map((o) => ({
+  const exportOrders = () => {
+    const rows = periodFilter(DriverOrdersDB.load(), period).map((o) => ({
       "N°": o.number,
       Date: fmtDate(o.createdAt),
       Heure: fmtTime(o.createdAt),
@@ -5271,8 +5326,8 @@ function ExportPanel({ dark }) {
     downloadCSV(`commandes_${tag()}.csv`, rows);
   };
 
-  const exportItems = async () => {
-    const orders = periodFilter(await DriverOrdersDB.load(), period);
+  const exportItems = () => {
+    const orders = periodFilter(DriverOrdersDB.load(), period);
     const rows = [];
     orders.forEach((o) => {
       (o.items || []).forEach((it) =>
@@ -5341,8 +5396,8 @@ function ExportPanel({ dark }) {
     downloadCSV(`habilitations_${tag()}.csv`, rows);
   };
 
-  const exportSynthesis = async () => {
-    const orders = periodFilter(await DriverOrdersDB.load(), period);
+  const exportSynthesis = () => {
+    const orders = periodFilter(DriverOrdersDB.load(), period);
     const valid = orders.filter((o) => !o.cancelled);
     const rex = periodFilter(RexDB.list(), period);
     const allItems = valid.flatMap((o) => o.items || []);
@@ -7515,29 +7570,97 @@ function AdminView({ onBack, dark }) {
 ═══════════════════════════════════════════════════ */
 
 /* ═══════════════════════════════════════════════════
-   DRIVER ORDERS DB - wrapper async autour de Supabase
+   DRIVER ORDERS DB - source unique (localStorage + mock)
    Statuts utilisés (sous-ensemble de ORDER_STATUS) :
      0 Commande reçue · 1 En préparation · 2 Prête
      3 Prise en charge par le livreur · 4 En livraison · 5 Livrée
 ═══════════════════════════════════════════════════ */
 
 const DriverOrdersDB = {
-  load: async () => {
+  // Charge les commandes réelles + complète avec quelques démos si besoin
+  load: () => {
+    let orders = [];
     try {
-      return await getOrders();
-    } catch (e) {
-      console.error("DriverOrdersDB.load:", e);
-      return [];
+      orders = JSON.parse(localStorage.getItem("hp_orders") || "[]");
+    } catch {
+      orders = [];
     }
+    // Démos seulement si aucune commande réelle (pour ne pas polluer la prod)
+    if (orders.length === 0) {
+      const today = new Date();
+      const ts = today.getTime();
+      orders = [
+        {
+          number: "DEMO-001",
+          customer: "Fatima A.",
+          phone: "+262639111111",
+          address: "12 rue des Baobaos, Kawéni",
+          total: 36,
+          orderType: "delivery",
+          paymentLabel: "💳 Carte bancaire",
+          notes: "Sonner 2 fois",
+          statusIdx: 2,
+          whatsappOptIn: true,
+          whatsappNumber: "262639111111",
+          createdAt: ts - 8 * 60 * 1000,
+          _demo: true,
+        },
+        {
+          number: "DEMO-002",
+          customer: "Said M.",
+          phone: "+262693222222",
+          address: "5 avenue des Cocotiers, Cavani",
+          total: 28,
+          orderType: "delivery",
+          paymentLabel: "💵 Espèces à la livraison",
+          notes: "",
+          statusIdx: 3,
+          whatsappOptIn: false,
+          createdAt: ts - 18 * 60 * 1000,
+          _demo: true,
+        },
+        {
+          number: "DEMO-003",
+          customer: "Nadia R.",
+          phone: "+262692333333",
+          address: "Lot. 8 Passamainty",
+          total: 42,
+          orderType: "delivery",
+          paymentLabel: "💳 Carte bancaire",
+          notes: "2e étage, code 1234",
+          statusIdx: 4,
+          whatsappOptIn: true,
+          whatsappNumber: "262692333333",
+          createdAt: ts - 35 * 60 * 1000,
+          _demo: true,
+        },
+        {
+          number: "DEMO-004",
+          customer: "Ibrahim K.",
+          phone: "+262639444444",
+          address: "12 rue de Majicavo",
+          total: 19,
+          orderType: "delivery",
+          paymentLabel: "💵 Espèces à la livraison",
+          notes: "",
+          statusIdx: 5,
+          whatsappOptIn: false,
+          createdAt: ts - 90 * 60 * 1000,
+          _demo: true,
+        },
+      ];
+    }
+    return orders;
   },
-  update: async (number, patch) => {
+  update: (number, patch) => {
     try {
-      await updateOrderByNumber(number, patch);
-    } catch (e) {
-      console.error("DriverOrdersDB.update:", e);
-    }
+      const orders = JSON.parse(localStorage.getItem("hp_orders") || "[]");
+      const idx = orders.findIndex((o) => o.number === number);
+      if (idx === -1) return; // commande démo - pas persistée
+      orders[idx] = { ...orders[idx], ...patch, updatedAt: Date.now() };
+      localStorage.setItem("hp_orders", JSON.stringify(orders));
+    } catch {}
   },
-  subscribe: (onChange) => subscribeOrders(onChange),
 };
 
 const DRIVER_STEPS = [
@@ -7565,7 +7688,7 @@ function RexModal({
   const valid =
     reason && (reason !== "other" || customReason.trim().length > 0);
 
-  const submit = async () => {
+  const submit = () => {
     if (!valid) return;
     const record = {
       orderNumber: order.number,
@@ -7580,7 +7703,11 @@ function RexModal({
       orderType: order.orderType || "delivery",
     };
     RexDB.add(record);
-    await DriverOrdersDB.update(order.number, { cancelled: true });
+    DriverOrdersDB.update(order.number, {
+      cancelled: true,
+      cancelledAt: Date.now(),
+      cancelReasonId: reason,
+    });
     showToast?.("⚠️ Incident enregistré");
     onSubmitted?.();
   };
@@ -7779,21 +7906,12 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
   const [, setTick] = useState(0);
 
   useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      const data = await DriverOrdersDB.load();
-      if (!cancelled) setOrders(data);
-    };
-    load();
-    const unsub = DriverOrdersDB.subscribe(load);
-    return () => {
-      cancelled = true;
-      unsub();
-    };
+    const t = setInterval(() => setOrders(DriverOrdersDB.load()), 30000);
+    return () => clearInterval(t);
   }, []);
 
-  const refresh = async () => {
-    setOrders(await DriverOrdersDB.load());
+  const refresh = () => {
+    setOrders(DriverOrdersDB.load());
     setTick((t) => t + 1);
   };
 
@@ -7829,7 +7947,7 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
     const allReady = items.length > 0 && items.every((it) => it.ready);
     const someReady = items.some((it) => it.ready);
 
-    const toggleItem = async (idx) => {
+    const toggleItem = (idx) => {
       const nextItems = items.map((it, i) =>
         i === idx ? { ...it, ready: !it.ready } : it,
       );
@@ -7838,17 +7956,17 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
       if (nextItems.every((it) => it.ready) && selected.statusIdx === 1) {
         patch.statusIdx = 2;
       }
-      await DriverOrdersDB.update(selected.number, patch);
+      DriverOrdersDB.update(selected.number, patch);
       refresh();
     };
 
-    const startPrep = async () => {
-      await DriverOrdersDB.update(selected.number, { statusIdx: 1 });
+    const startPrep = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 1 });
       refresh();
     };
 
-    const forceReady = async () => {
-      await DriverOrdersDB.update(selected.number, { statusIdx: 2 });
+    const forceReady = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 2 });
       refresh();
     };
 
@@ -7903,10 +8021,7 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
             <p className="text-sm font-bold">❌ INCIDENT — Commande annulée</p>
             <p className="text-xs mt-1">
-              {REX_REASON_LABEL(
-                RexDB.list().find((r) => r.orderNumber === selected.number)
-                  ?.reason,
-              )}
+              {REX_REASON_LABEL(selected.cancelReasonId)}
             </p>
           </div>
         )}
@@ -8065,8 +8180,8 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
               📲 Notifier client : "Commande prête"
             </button>
             <button
-              onClick={async () => {
-                await DriverOrdersDB.update(selected.number, { statusIdx: 6 });
+              onClick={() => {
+                DriverOrdersDB.update(selected.number, { statusIdx: 6 });
                 refresh();
                 setSelectedNum(null);
                 showToast?.("✅ Commande retirée");
@@ -8263,33 +8378,14 @@ function DriverView({ onBack, dark, showToast }) {
   const [orders, setOrders] = useState([]);
   const [selectedNum, setSelectedNum] = useState(null);
   const [, setTick] = useState(0);
-  // État local au livreur : commandes pour lesquelles il a déjà cliqué "Arrivé".
-  // Pas persisté (1 colonne DB en moins). Si la page refresh, le livreur
-  // retape — c'est une fenêtre de quelques minutes max.
-  const arrivedRef = useRef(new Set());
 
   useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      const data = await DriverOrdersDB.load();
-      if (cancelled) return;
-      // Applique l'overlay `arrived` depuis la Set locale
-      setOrders(
-        data.map((o) =>
-          arrivedRef.current.has(o.number) ? { ...o, arrived: true } : o,
-        ),
-      );
-    };
-    load();
-    const unsub = DriverOrdersDB.subscribe(load);
-    return () => {
-      cancelled = true;
-      unsub();
-    };
+    const t = setInterval(() => setOrders(DriverOrdersDB.load()), 30000);
+    return () => clearInterval(t);
   }, []);
 
-  const refresh = async () => {
-    setOrders(await DriverOrdersDB.load());
+  const refresh = () => {
+    setOrders(DriverOrdersDB.load());
     setTick((t) => t + 1);
   };
 
@@ -8329,32 +8425,26 @@ function DriverView({ onBack, dark, showToast }) {
     const mapQuery = encodeURIComponent(selected.address || "");
     const items = Array.isArray(selected.items) ? selected.items : [];
 
-    const pickup = async () => {
-      await DriverOrdersDB.update(selected.number, { statusIdx: 3 });
+    const pickup = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 3 });
       refresh();
     };
-    const startRoute = async () => {
-      await DriverOrdersDB.update(selected.number, { statusIdx: 4 });
+    const startRoute = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 4 });
       refresh();
     };
     const markArrived = () => {
-      arrivedRef.current.add(selected.number);
+      DriverOrdersDB.update(selected.number, { arrived: true });
       if (selected.whatsappOptIn && selected.whatsappNumber) {
         sendWhatsApp(
           selected.whatsappNumber,
           `🛵 House Pizza - Bonjour ${selected.customer}, votre livreur est ARRIVÉ devant chez vous (commande #${selected.number}).`,
         );
       }
-      // Re-render avec l'overlay local
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.number === selected.number ? { ...o, arrived: true } : o,
-        ),
-      );
+      refresh();
     };
-    const markDelivered = async () => {
-      await DriverOrdersDB.update(selected.number, { statusIdx: 5 });
-      arrivedRef.current.delete(selected.number);
+    const markDelivered = () => {
+      DriverOrdersDB.update(selected.number, { statusIdx: 5 });
       refresh();
       setSelectedNum(null);
       showToast?.("✅ Commande livrée");
@@ -8440,11 +8530,7 @@ function DriverView({ onBack, dark, showToast }) {
         {selected.cancelled && (
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
             <p className="text-sm font-bold">
-              ❌ INCIDENT —{" "}
-              {REX_REASON_LABEL(
-                RexDB.list().find((r) => r.orderNumber === selected.number)
-                  ?.reason,
-              )}
+              ❌ INCIDENT — {REX_REASON_LABEL(selected.cancelReasonId)}
             </p>
           </div>
         )}
@@ -8719,8 +8805,8 @@ function OrderTrackingView({ dark, onBack }) {
   const [orderResult, setOrderResult] = useState(null);
   const [err, setErr] = useState("");
 
-  // Cherche la commande dans Supabase
-  const handleSearch = async () => {
+  // Simulation : cherche dans les commandes sauvegardées en localStorage
+  const handleSearch = () => {
     const num = orderNum.trim();
     if (!num) {
       setErr("Veuillez saisir un numéro de commande");
@@ -8729,11 +8815,42 @@ function OrderTrackingView({ dark, onBack }) {
     setErr("");
     setSearched(true);
 
+    // Cherche dans localStorage (les vraies commandes enregistrées)
     try {
-      const found = await getOrderByNumber(num);
-      setOrderResult(found || null);
-    } catch (e) {
-      console.error("TRACK SEARCH:", e);
+      const stored = JSON.parse(localStorage.getItem("hp_orders") || "[]");
+      const found = stored.find(
+        (o) => String(o.number).toLowerCase() === num.toLowerCase(),
+      );
+      if (found) {
+        setOrderResult(found);
+        return;
+      }
+    } catch {}
+
+    // Données de démo si non trouvé
+    const demoOrders = {
+      20260524041: {
+        number: "20260524041",
+        customer: "Fatima A.",
+        total: 36,
+        statusIdx: 3,
+        orderType: "delivery",
+        paymentLabel: "💳 Carte bancaire",
+        address: "12 rue des Baobaos, Kawéni",
+      },
+      20260524040: {
+        number: "20260524040",
+        customer: "Said M.",
+        total: 28,
+        statusIdx: 2,
+        orderType: "delivery",
+        paymentLabel: "💵 Espèces à la livraison",
+        address: "5 avenue des Cocotiers, Cavani",
+      },
+    };
+    if (demoOrders[num]) {
+      setOrderResult(demoOrders[num]);
+    } else {
       setOrderResult(null);
     }
   };
@@ -10071,20 +10188,21 @@ export default function HousePizza() {
           onBack={() => setStep("cart")}
           showToast={showToast}
           user={user}
-          onSuccess={async (data) => {
-            // Persister la commande dans Supabase
+          onSuccess={(data) => {
+            // Sauvegarder la commande pour le suivi
             try {
-              const created = await createOrder({
-                ...data,
-                subtotal: data.subtotal ?? data.total,
-              });
-              setCart([]);
-              setOrderData(created); // contient `id` + `number` généré par la DB
-              setStep("confirmation");
-            } catch (e) {
-              console.error("CREATE ORDER FAILED:", e);
-              showToast?.("❌ Erreur enregistrement commande");
-            }
+              const orders = JSON.parse(
+                localStorage.getItem("hp_orders") || "[]",
+              );
+              orders.unshift({ ...data, statusIdx: 0, createdAt: Date.now() });
+              localStorage.setItem(
+                "hp_orders",
+                JSON.stringify(orders.slice(0, 50)),
+              );
+            } catch {}
+            setCart([]);
+            setOrderData(data);
+            setStep("confirmation");
           }}
         />
       )}
