@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
-
+import { supabase } from "./lib/supabase";
 import cardLogo from "./assets/payments/card.png";
 import applePayLogo from "./assets/payments/applepay.svg";
 import googlePayLogo from "./assets/payments/googlepay.svg";
@@ -37,6 +37,7 @@ import cocaCola2Img from "./assets/drinks/coca2.png";
 import stoneyGinger2lImg from "./assets/drinks/stoneyginger2l.png";
 import caribiaImg from "./assets/drinks/caribia.png";
 
+import StripePaymentSheet from "./components/StripePaymentSheet";
 import {
   getOrders,
   getOrderByNumber,
@@ -45,6 +46,13 @@ import {
   updateOrderByNumber,
   subscribeOrders,
   paymentLabelFor,
+  getCurrentUser,
+  getUserRole,
+  signIn,
+  signOut,
+  getIncidents,
+  createIncident,
+  deleteIncident,
 } from "./lib/db";
 
 /* ═══════════════════════════════════════════════════
@@ -436,9 +444,7 @@ const DELIVERY_FEE = 0;
 const NO_PIZZA_DELIVERY_FEE = 2;
 const MIN_ORDER_AMOUNT = 5;
 /* ═══════════════════════════════════════════════════
-   ROLES DB - habilitations dynamiques (admin / cashier / driver)
-   - Persistance : localStorage "hp_roles"
-   - Seed initial + protection : l'admin principal ne peut pas être supprimé
+   ROLES - rôles gérés via Supabase user_roles
 ═══════════════════════════════════════════════════ */
 const ROLES = ["admin", "cashier", "driver"];
 const ROLE_LABELS = {
@@ -447,69 +453,14 @@ const ROLE_LABELS = {
   driver: "🛵 Livreur",
 };
 const PROTECTED_ADMIN = "housepizzayy.976@gmail.com";
-const DEFAULT_ROLES = {
-  "housepizzayy.976@gmail.com": "admin",
-  "rachie.2@live.fr": "admin",
-  "housepizzacaisse@gmail.com": "cashier",
-  "housepizzalivreur@gmail.com": "driver",
-};
 
+// RolesDB — remplacé par Supabase user_roles
+// Gestion des rôles via SQL Editor Supabase ou AccessManager branché sur getUserRole()
 const RolesDB = {
-  KEY: "hp_roles",
-  load() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(this.KEY) || "null");
-      if (raw && typeof raw === "object") {
-        // Re-injecte admin principal s'il a été altéré
-        if (raw[PROTECTED_ADMIN] !== "admin") {
-          raw[PROTECTED_ADMIN] = "admin";
-          this._write(raw);
-        }
-        return raw;
-      }
-    } catch {}
-    this._write(DEFAULT_ROLES);
-    return { ...DEFAULT_ROLES };
-  },
-  _write(obj) {
-    try {
-      localStorage.setItem(this.KEY, JSON.stringify(obj));
-    } catch {}
-  },
-  get(email) {
-    if (!email) return null;
-    return this.load()[email.toLowerCase().trim()] || null;
-  },
-  set(email, role) {
-    const e = (email || "").toLowerCase().trim();
-    if (!e || !ROLES.includes(role))
-      return { ok: false, err: "Email ou rôle invalide" };
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e))
-      return { ok: false, err: "Format email invalide" };
-    const map = this.load();
-    map[e] = role;
-    this._write(map);
-    return { ok: true };
-  },
-  remove(email) {
-    const e = (email || "").toLowerCase().trim();
-    if (e === PROTECTED_ADMIN)
-      return { ok: false, err: "Admin principal protégé" };
-    const map = this.load();
-    if (!map[e]) return { ok: false, err: "Email introuvable" };
-    delete map[e];
-    this._write(map);
-    return { ok: true };
-  },
-  list() {
-    return Object.entries(this.load())
-      .map(([email, role]) => ({ email, role }))
-      .sort(
-        (a, b) =>
-          ROLES.indexOf(a.role) - ROLES.indexOf(b.role) ||
-          a.email.localeCompare(b.email),
-      );
-  },
+  list: () => [],
+  get: () => null,
+  set: () => ({ ok: false, err: "Gérer les rôles via Supabase Dashboard" }),
+  remove: () => ({ ok: false, err: "Gérer les rôles via Supabase Dashboard" }),
 };
 /* ═══════════════════════════════════════════════════
    REX DB - Incidents commandes (immuable)
@@ -532,38 +483,26 @@ const REX_REASON_LABEL = (id) =>
 const isPizzeriaFault = (reasonId) =>
   !!REX_REASONS.find((r) => r.id === reasonId)?.pizzeriaFault;
 
+// RexDB — remplacé par Supabase incidents
+// Shim synchrone pour compatibilité, les données sont chargées via getIncidents()
 const RexDB = {
-  KEY: "hp_rex",
-  load() {
-    try {
-      const raw = JSON.parse(localStorage.getItem(this.KEY) || "[]");
-      return Array.isArray(raw) ? raw : [];
-    } catch {
-      return [];
-    }
-  },
-  _write(arr) {
-    try {
-      localStorage.setItem(this.KEY, JSON.stringify(arr.slice(0, 500)));
-    } catch {}
-  },
-  add(entry) {
-    // IMMUABLE : on ajoute, on ne modifie jamais
-    const list = this.load();
-    const record = {
-      id: `rex_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-      createdAt: Date.now(),
-      ...entry,
-    };
-    list.unshift(record);
-    this._write(list);
-    return record;
-  },
+  _cache: [],
   list() {
-    return this.load();
+    return this._cache;
+  },
+  load() {
+    return this._cache;
   },
   byOrder(orderNumber) {
-    return this.load().find((r) => r.orderNumber === orderNumber) || null;
+    return this._cache.find((r) => r.orderNumber === orderNumber) || null;
+  },
+  async reload() {
+    this._cache = await getIncidents();
+    return this._cache;
+  },
+  async add(entry) {
+    await createIncident(entry);
+    return this.reload();
   },
 };
 
@@ -852,7 +791,7 @@ const BlacklistDB = {
     if (c === 1) return 1;
     return 2;
   },
-  // Liste des incidents affichables (RiskBanner) — sans les erreurs pizzeria
+  // Liste des incidents affichables (RiskBanner) - sans les erreurs pizzeria
   incidents(phone, address) {
     const rex = RexDB.load();
     const np = normPhone(phone);
@@ -913,10 +852,9 @@ const BlacklistDB = {
   },
 };
 
-const getUserRole = (e) => RolesDB.get(e) || "customer";
-const isAdminEmail = (e) => getUserRole(e) === "admin";
-const isCashierEmail = (e) => getUserRole(e) === "cashier";
-const isDriverEmail = (e) => getUserRole(e) === "driver";
+const isAdminEmail = (e) => RolesDB.get(e) === "admin";
+const isCashierEmail = (e) => RolesDB.get(e) === "cashier";
+const isDriverEmail = (e) => RolesDB.get(e) === "driver";
 // ─── PROMO MARGARITA (GELÉE - base pour futures offres) ───────────────────────
 // Offre : 2 pizzas achetées = 1 Margarita Ø33 offerte (-12€)
 // Pour réactiver : passer PROMO_PIZZA_ACTIVE à true
@@ -1585,48 +1523,15 @@ const AccountsDB = {
 };
 
 /* ═══════════════════════════════════════════════════
-   SECURITY - session (auto-logout après inactivité)
+   SECURITY - session gérée par Supabase Auth
+   SessionDB conservé comme shim no-op pour compatibilité
 ═══════════════════════════════════════════════════ */
 
-const SESSION_KEY = "hp_session";
-const SESSION_IDLE_MS = 30 * 60 * 1000; // 30 min d'inactivité
-
 const SessionDB = {
-  save: (user) => {
-    try {
-      const payload = { user, lastActivity: Date.now(), createdAt: Date.now() };
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload));
-    } catch {}
-  },
-  load: () => {
-    try {
-      const raw = sessionStorage.getItem(SESSION_KEY);
-      if (!raw) return null;
-      const payload = JSON.parse(raw);
-      if (!payload?.user || !payload.lastActivity) return null;
-      if (Date.now() - payload.lastActivity > SESSION_IDLE_MS) {
-        sessionStorage.removeItem(SESSION_KEY);
-        return null;
-      }
-      return payload.user;
-    } catch {
-      return null;
-    }
-  },
-  touch: () => {
-    try {
-      const raw = sessionStorage.getItem(SESSION_KEY);
-      if (!raw) return;
-      const payload = JSON.parse(raw);
-      payload.lastActivity = Date.now();
-      sessionStorage.setItem(SESSION_KEY, JSON.stringify(payload));
-    } catch {}
-  },
-  clear: () => {
-    try {
-      sessionStorage.removeItem(SESSION_KEY);
-    } catch {}
-  },
+  save: () => {},
+  load: () => null,
+  touch: () => {},
+  clear: () => {},
 };
 
 /* ═══════════════════════════════════════════════════
@@ -1851,192 +1756,83 @@ function AuthModal({ onClose, onLogin, dark, onLegal }) {
     }
   }, [password, resetNewPwd, mode, isRegister]);
 
-  // ── Connexion / Inscription email ────────────────────
+  // ── Connexion email via Supabase Auth ────────────────
   const handleEmailAuth = async () => {
-    // Honeypot : si rempli → bot
-    if (hp) {
-      setErr({ email: "Erreur de soumission." });
-      return;
-    }
-    // Anti-bot : soumission trop rapide
-    if (Date.now() - openedAt < 1500) {
-      setErr({ email: "Action trop rapide, veuillez réessayer." });
-      return;
-    }
     if (busy) return;
-
-    const normEmail = normalizeEmail(email);
-
-    // Anti brute-force : lockout
-    if (!isRegister) {
-      const lockMin = LoginAttemptsDB.isLocked(normEmail);
-      if (lockMin > 0) {
-        setErr({
-          password: `Trop de tentatives. Compte verrouillé ${lockMin} min.`,
-        });
-        return;
-      }
-    }
-
-    if (isRegister) {
-      // Rate limit inscription
-      const okMin = rateLimit({
-        key: "register-minute-limit",
-        limit: 3,
-        windowMs: 60 * 1000,
+    if (!email.trim() || !password) {
+      setErr({
+        email: !email.trim() ? "Email requis" : "",
+        password: !password ? "Mot de passe requis" : "",
       });
-      const okHour = rateLimit({
-        key: "register-hour-limit",
-        limit: 10,
-        windowMs: 60 * 60 * 1000,
-      });
-      if (!okMin || !okHour) {
-        setErr({ email: "Trop de tentatives. Réessayez plus tard." });
-        return;
-      }
-    } else {
-      // Rate limit login (global, anti spray)
-      const okLogin = rateLimit({
-        key: "login-minute-limit",
-        limit: 10,
-        windowMs: 60 * 1000,
-      });
-      if (!okLogin) {
-        setErr({ password: "Trop de tentatives. Patientez une minute." });
-        return;
-      }
-    }
-
-    const e = {};
-
-    // Validation email (format + non jetable)
-    const emailCheck = validateEmailStrict(normEmail);
-    if (!emailCheck.ok) e.email = emailCheck.reason;
-
-    if (isRegister) {
-      const pwdCheck = evaluatePassword(password);
-      if (!pwdCheck.ok) e.password = pwdCheck.reason;
-      if (!firstName.trim()) e.firstName = "Prénom requis";
-      if (!lastName.trim()) e.lastName = "Nom requis";
-      if (!validatePhone(regPhone))
-        e.regPhone =
-          "Numéro invalide (06/07 métropole ou 0639/0692/0693 Mayotte)";
-      // 1 email = 1 compte (strict, insensible à la casse)
-      if (!e.email && AccountsDB.exists(normEmail))
-        e.email =
-          "Un compte existe déjà avec cet email. Connectez-vous ou cliquez sur « Mot de passe oublié ».";
-    } else {
-      if (!password) e.password = "Mot de passe requis";
-    }
-
-    if (Object.keys(e).length) {
-      setErr(e);
       return;
     }
-
     setBusy(true);
+    setErr({});
     try {
-      if (isRegister) {
-        const stored = await AccountsDB.register({
-          name: `${sanitize(firstName)} ${sanitize(lastName)}`,
-          email: normEmail,
-          password,
-          phone: regPhone,
-          streetNumber: regStreetNumber,
-          streetName: regAddress,
-          address: [regStreetNumber, regAddress].filter(Boolean).join(" "),
-          village: regVillage,
-          provider: "email",
-        });
-        LoginAttemptsDB.reset(normEmail);
-        // On ne renvoie pas le hash dans la session côté UI
-        const { passwordHash, ...safe } = stored;
-        onLogin(safe);
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim().toLowerCase(),
+        password,
+      });
+      if (error) throw error;
+      onLogin({ id: data.user.id, email: data.user.email });
+    } catch (e) {
+      const msg = e?.message || "";
+      if (msg.includes("Invalid login")) {
+        setErr({ password: "Email ou mot de passe incorrect" });
+      } else if (msg.includes("Email not confirmed")) {
+        setErr({ email: "Confirmez votre email avant de vous connecter" });
       } else {
-        const acc = await AccountsDB.verify(normEmail, password);
-        if (!acc) {
-          const state = LoginAttemptsDB.fail(normEmail);
-          const remaining = MAX_LOGIN_ATTEMPTS - state.count;
-          if (state.lockedUntil) {
-            setErr({
-              password: "Compte verrouillé 15 min après trop de tentatives.",
-            });
-          } else {
-            setErr({
-              password: `Email ou mot de passe incorrect (${remaining} tentative${remaining > 1 ? "s" : ""} restante${remaining > 1 ? "s" : ""})`,
-            });
-          }
-          return;
-        }
-        LoginAttemptsDB.reset(normEmail);
-        const { passwordHash, ...safe } = acc;
-        onLogin(safe);
+        setErr({ password: msg || "Erreur de connexion" });
       }
     } finally {
       setBusy(false);
     }
   };
 
-  // ── Mot de passe oublié - étape 1 : demande email ────
-  const handleForgotRequest = () => {
+  // ── Mot de passe oublié via Supabase ────────────────
+  const handleForgotRequest = async () => {
     if (busy) return;
-    // Rate limit : 3 demandes / 10 min / appareil
-    const ok = rateLimit({
-      key: "reset-request-limit",
-      limit: 3,
-      windowMs: 10 * 60 * 1000,
-    });
-    if (!ok) {
-      setErr({ resetEmail: "Trop de demandes. Réessayez dans 10 minutes." });
+    if (!resetEmail.trim()) {
+      setErr({ resetEmail: "Email requis" });
       return;
     }
-    const normEmail = normalizeEmail(resetEmail);
-    const check = validateEmailStrict(normEmail);
-    if (!check.ok) {
-      setErr({ resetEmail: check.reason });
-      return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.auth.resetPasswordForEmail(
+        resetEmail.trim().toLowerCase(),
+        { redirectTo: window.location.origin },
+      );
+      if (error) throw error;
+      setMode("reset");
+      setErr({});
+    } catch (e) {
+      setErr({ resetEmail: e?.message || "Erreur envoi email" });
+    } finally {
+      setBusy(false);
     }
-    // Sécurité : on ne révèle PAS si l'email existe (énumération).
-    // On simule toujours un envoi. Token créé seulement si compte existe.
-    let token = "";
-    if (AccountsDB.exists(normEmail)) {
-      token = PasswordResetDB.create(normEmail);
-    }
-    setResetToken(token); // mock : affiché dans l'UI pour la démo
-    setMode("reset");
-    setErr({});
   };
 
-  // ── Mot de passe oublié - étape 2 : nouveau mot de passe ─
+  // ── Reset mot de passe (après lien email) ────────────
   const handleResetConfirm = async () => {
     if (busy) return;
     const e = {};
-    const normEmail = normalizeEmail(resetEmail);
-    if (!resetTokenInput.trim()) e.resetTokenInput = "Code requis";
-    const pwdCheck = evaluatePassword(resetNewPwd);
-    if (!pwdCheck.ok) e.resetNewPwd = pwdCheck.reason;
+    if (!resetNewPwd) e.resetNewPwd = "Mot de passe requis";
     if (resetNewPwd !== resetNewPwdConfirm)
       e.resetNewPwdConfirm = "Les mots de passe ne correspondent pas";
     if (Object.keys(e).length) {
       setErr(e);
       return;
     }
-
-    if (!PasswordResetDB.verify(normEmail, resetTokenInput.trim())) {
-      setErr({ resetTokenInput: "Code invalide ou expiré" });
-      return;
-    }
     setBusy(true);
     try {
-      const ok = await AccountsDB.updatePassword(normEmail, resetNewPwd);
-      if (!ok) {
-        setErr({ resetTokenInput: "Compte introuvable" });
-        return;
-      }
-      PasswordResetDB.consume(normEmail, resetTokenInput.trim());
-      LoginAttemptsDB.reset(normEmail);
+      const { error } = await supabase.auth.updateUser({
+        password: resetNewPwd,
+      });
+      if (error) throw error;
       setMode("reset_done");
       setErr({});
+    } catch (e) {
+      setErr({ resetNewPwd: e?.message || "Erreur mise à jour mot de passe" });
     } finally {
       setBusy(false);
     }
@@ -2578,23 +2374,13 @@ function AuthModal({ onClose, onLogin, dark, onLegal }) {
                 className={`rounded-2xl px-4 py-3 mb-3 border ${th.promoBg(dark)}`}
               >
                 <p className="text-sm font-semibold">
-                  📧 Si un compte existe pour <strong>{resetEmail}</strong>, un
-                  email a été envoyé avec un code de réinitialisation valide 30
-                  minutes.
+                  📧 Un email a été envoyé à <strong>{resetEmail}</strong> avec
+                  un lien pour choisir un nouveau mot de passe.
                 </p>
-                {resetToken && (
-                  <p
-                    className={`text-xs mt-2 font-mono break-all ${th.textSub(dark)}`}
-                  >
-                    ⚙️ <strong>Mode démo</strong> - votre code :{" "}
-                    <span className="select-all font-bold">{resetToken}</span>
-                    <br />
-                    <span className="italic">
-                      En production, ce code est envoyé uniquement par email,
-                      pas affiché ici.
-                    </span>
-                  </p>
-                )}
+                <p className={`text-xs mt-1 ${th.textSub(dark)}`}>
+                  Cliquez sur le lien dans l'email, puis revenez ici pour vous
+                  connecter.
+                </p>
               </div>
               <div className="space-y-3">
                 <div>
@@ -3902,7 +3688,7 @@ function CheckoutView({
       e.phone = "Numéro invalide (06/07 métropole ou 0639/0692/0693 Mayotte)";
     if (isBlocked) {
       showToast(
-        "🚫 Commande bloquée — Trop d'incidents passés. Contactez House Pizza.",
+        "🚫 Commande bloquée - Trop d'incidents passés. Contactez House Pizza.",
         "error",
       );
       return;
@@ -3935,7 +3721,7 @@ function CheckoutView({
     }
     if (isBlocked) {
       showToast(
-        "🚫 Commande bloquée — 2+ incidents enregistrés. Contactez House Pizza directement.",
+        "🚫 Commande bloquée - 2+ incidents enregistrés. Contactez House Pizza directement.",
         "error",
       );
       return;
@@ -3945,24 +3731,10 @@ function CheckoutView({
 
   const PAYMENT_OPTIONS = [
     {
-      key: "card",
-      label: "Carte bancaire",
+      key: "online",
+      label: "Paiement en ligne",
       logo: cardLogo,
-      desc: "Visa, Mastercard - paiement sécurisé en ligne",
-      onlineOnly: false,
-    },
-    {
-      key: "applepay",
-      label: "Apple Pay",
-      logo: applePayLogo,
-      desc: "Paiement rapide via Face ID / Touch ID",
-      onlineOnly: false,
-    },
-    {
-      key: "googlepay",
-      label: "Google Pay",
-      logo: googlePayLogo,
-      desc: "Paiement rapide via votre compte Google",
+      desc: "Carte, Apple Pay, Google Pay - paiement sécurisé",
       onlineOnly: false,
     },
     {
@@ -3991,37 +3763,126 @@ function CheckoutView({
       showToast("🚫 Commande bloquée", "error");
       return;
     }
+
     if (!paymentMethod) {
       showToast("Choisissez un mode de paiement", "error");
       return;
     }
+
     if (submitting) return;
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 1500));
-    // Marquer le code promo comme utilisé
-    if (promoResult?.valid && promoCode.trim()) {
-      markPromoCodeUsed(promoCode.trim(), form.phone);
+
+    // --- Paiement en espèces ---
+    if (paymentMethod === "cash") {
+      try {
+        // Marquer le code promo comme utilisé
+        if (promoResult?.valid && promoCode.trim()) {
+          markPromoCodeUsed(promoCode.trim(), form.phone);
+        }
+
+        onSuccess({
+          total: finalTotal,
+          subtotal:
+            finalTotal + (promoResult?.valid ? promoResult.discount : 0),
+          orderType,
+          paymentMethod,
+          promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
+          promoDiscount: promoResult?.valid ? promoResult.discount : 0,
+          customer: sanitize(form.name),
+          phone: form.phone,
+          address:
+            orderType === "delivery"
+              ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
+              : "",
+          notes: sanitize(form.notes),
+          whatsappOptIn: wantsWhatsApp,
+          whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
+          items: cart
+            ? cart.map((it, i) => ({ ...it, idx: i, ready: false }))
+            : [],
+        });
+
+        setSubmitting(false);
+      } catch (err) {
+        showToast("Erreur enregistrement commande", "error");
+        setSubmitting(false);
+      }
+
+      return;
     }
-    onSuccess({
-      number: generateOrderNumber(),
-      total: finalTotal,
-      subtotal: finalTotal + (promoResult?.valid ? promoResult.discount : 0),
-      orderType,
-      paymentMethod,
-      promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
-      promoDiscount: promoResult?.valid ? promoResult.discount : 0,
-      customer: sanitize(form.name),
-      phone: form.phone,
-      address:
-        orderType === "delivery"
-          ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
-          : "",
-      notes: sanitize(form.notes),
-      // Opt-in WhatsApp : persisté via marqueur dans `notes` (cf lib/db.js)
-      whatsappOptIn: wantsWhatsApp,
-      whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
-      items: cart ? cart.map((it, i) => ({ ...it, idx: i, ready: false })) : [],
-    });
+
+    // --- Paiement hors-ligne (wero, carteresto) ---
+    if (paymentMethod === "wero" || paymentMethod === "carteresto") {
+      try {
+        if (promoResult?.valid && promoCode.trim()) {
+          markPromoCodeUsed(promoCode.trim(), form.phone);
+        }
+        onSuccess({
+          total: finalTotal,
+          subtotal:
+            finalTotal + (promoResult?.valid ? promoResult.discount : 0),
+          orderType,
+          paymentMethod,
+          promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
+          promoDiscount: promoResult?.valid ? promoResult.discount : 0,
+          customer: sanitize(form.name),
+          phone: form.phone,
+          address:
+            orderType === "delivery"
+              ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
+              : "",
+          notes: sanitize(form.notes),
+          whatsappOptIn: wantsWhatsApp,
+          whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
+          items: cart
+            ? cart.map((it, i) => ({ ...it, idx: i, ready: false }))
+            : [],
+        });
+        setSubmitting(false);
+      } catch (err) {
+        showToast("Erreur enregistrement commande", "error");
+        setSubmitting(false);
+      }
+      return;
+    }
+
+    // --- Paiement en ligne (Stripe) ---
+    if (paymentMethod === "online") {
+      try {
+        if (promoResult?.valid && promoCode.trim()) {
+          markPromoCodeUsed(promoCode.trim(), form.phone);
+        }
+
+        onSuccess({
+          total: finalTotal,
+          subtotal:
+            finalTotal + (promoResult?.valid ? promoResult.discount : 0),
+          orderType,
+          paymentMethod,
+          promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
+          promoDiscount: promoResult?.valid ? promoResult.discount : 0,
+          customer: sanitize(form.name),
+          phone: form.phone,
+          address:
+            orderType === "delivery"
+              ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
+              : "",
+          notes: sanitize(form.notes),
+          whatsappOptIn: wantsWhatsApp,
+          whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
+          items: cart
+            ? cart.map((it, i) => ({ ...it, idx: i, ready: false }))
+            : [],
+        });
+
+        // setSubmitting(false) sera fait après le paiement Stripe
+      } catch (err) {
+        showToast("Erreur enregistrement commande", "error");
+        setSubmitting(false);
+      }
+
+      return;
+    }
   };
 
   const SPECIAL_LABELS = {
@@ -4845,6 +4706,21 @@ function ConfirmationView({ orderData, onBack, dark }) {
         </p>
       </div>
 
+      {orderData.paymentMethod === "wero" && (
+        <a
+          href={
+            "wero://transfer?amount=" +
+            orderData.total.toFixed(2) +
+            "&currency=EUR&label=HousePizza%20%23" +
+            orderData.number +
+            "&recipient=0639254525"
+          }
+          className="w-full bg-violet-600 hover:bg-violet-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all flex items-center justify-center gap-2 mb-3"
+        >
+          💜 Payer {orderData.total.toFixed(2)} € via Wero
+        </a>
+      )}
+
       <button
         onClick={onBack}
         className="w-full bg-emerald-600 hover:bg-emerald-700 text-white py-4 rounded-2xl font-bold active:scale-95 transition-all"
@@ -5452,9 +5328,9 @@ function ExportPanel({ dark }) {
 /* ═══════════════════════════════════════════════════
    INCIDENTS PANEL - Vue admin : REX + clients à risque
 ═══════════════════════════════════════════════════ */
-function IncidentsPanel({ dark }) {
+function IncidentsPanel({ dark, user }) {
   const [tab, setTab] = useState("incidents");
-  const [rex, setRex] = useState(() => RexDB.list());
+  const [rex, setRex] = useState([]);
   const [override, setOverride] = useState(() => BlacklistOverrideDB.load());
   const [, setTick] = useState(0);
   const [manualForm, setManualForm] = useState({
@@ -5463,13 +5339,18 @@ function IncidentsPanel({ dark }) {
     address: "",
   });
   const [manualErr, setManualErr] = useState("");
-  const currentUser = SessionDB.load();
+  const currentUser = user;
 
-  const refresh = () => {
-    setRex(RexDB.list());
+  const refresh = async () => {
+    const list = await RexDB.reload();
+    setRex(list);
     setOverride(BlacklistOverrideDB.load());
     setTick((x) => x + 1);
   };
+
+  useEffect(() => {
+    refresh();
+  }, []);
 
   useEffect(() => {
     const t = setInterval(refresh, 10000);
@@ -5568,7 +5449,7 @@ function IncidentsPanel({ dark }) {
                     </span>
                     {fault && (
                       <span className="text-[10px] bg-amber-500 text-white font-bold px-2 py-0.5 rounded-full">
-                        🍕 Erreur interne — sans conséquence client
+                        🍕 Erreur interne - sans conséquence client
                       </span>
                     )}
                     <span className={`ml-auto text-xs ${th.textSub(dark)}`}>
@@ -5576,14 +5457,14 @@ function IncidentsPanel({ dark }) {
                     </span>
                   </div>
                   <p className={`text-sm font-bold ${th.text(dark)}`}>
-                    {r.customer || "—"} · {r.phone || "—"}
+                    {r.customer || "-"} · {r.phone || "-"}
                   </p>
                   <p className={`text-xs ${th.textSub(dark)} truncate`}>
                     {r.address}
                   </p>
                   <p className="text-sm mt-1 text-red-500 font-semibold">
                     {REX_REASON_LABEL(r.reason)}
-                    {r.customReason ? ` — ${r.customReason}` : ""}
+                    {r.customReason ? ` - ${r.customReason}` : ""}
                   </p>
                   {r.comment && (
                     <p className={`text-xs italic mt-1 ${th.textSub(dark)}`}>
@@ -5616,7 +5497,7 @@ function IncidentsPanel({ dark }) {
                 </span>
                 <div className="flex-1 min-w-0">
                   <p className={`font-bold text-sm truncate ${th.text(dark)}`}>
-                    {c.customer || "—"}
+                    {c.customer || "-"}
                     {c.manualBlock && (
                       <span className="ml-2 text-[10px] font-bold text-red-500">
                         🛡️ MANUEL
@@ -5715,10 +5596,10 @@ function IncidentsPanel({ dark }) {
                       <p
                         className={`text-sm font-bold truncate ${th.text(dark)}`}
                       >
-                        {b.customer || "—"}
+                        {b.customer || "-"}
                       </p>
                       <p className={`text-xs ${th.textSub(dark)}`}>
-                        {b.phone || "—"} {b.address ? `· ${b.address}` : ""}
+                        {b.phone || "-"} {b.address ? `· ${b.address}` : ""}
                       </p>
                       <p className={`text-[10px] ${th.textSub(dark)}`}>
                         par {b.by} ·{" "}
@@ -5762,10 +5643,10 @@ function IncidentsPanel({ dark }) {
                       <p
                         className={`text-sm font-bold truncate ${th.text(dark)}`}
                       >
-                        {w.customer || "—"}
+                        {w.customer || "-"}
                       </p>
                       <p className={`text-xs ${th.textSub(dark)}`}>
-                        {w.phone || "—"} {w.address ? `· ${w.address}` : ""}
+                        {w.phone || "-"} {w.address ? `· ${w.address}` : ""}
                       </p>
                       <p className={`text-[10px] ${th.textSub(dark)}`}>
                         par {w.by} ·{" "}
@@ -6385,7 +6266,7 @@ function InventoryPanel({ dark }) {
                       +{h.qty} {selected.unit}
                     </p>
                     <p className={`text-[11px] ${th.textSub(dark)}`}>
-                      {h.supplier || "—"} ·{" "}
+                      {h.supplier || "-"} ·{" "}
                       {new Date(h.date).toLocaleDateString("fr-FR")}
                     </p>
                   </div>
@@ -6440,7 +6321,7 @@ function InventoryPanel({ dark }) {
                           )}
                         </div>
                         <p className={`text-xs ${th.textSub(dark)}`}>
-                          {it.supplier || "—"} · Acheté {it.buyPrice.toFixed(2)}{" "}
+                          {it.supplier || "-"} · Acheté {it.buyPrice.toFixed(2)}{" "}
                           €/{it.unit}
                         </p>
                         {it.lastBought && (
@@ -7209,7 +7090,7 @@ function OffersPanel({ dark }) {
    ADMIN VIEW - Dashboard
 ═══════════════════════════════════════════════════ */
 
-function AdminView({ onBack, dark }) {
+function AdminView({ onBack, dark, user }) {
   const statusColor = {
     "En livraison": "bg-blue-500",
     Prête: "bg-emerald-500",
@@ -7332,7 +7213,7 @@ function AdminView({ onBack, dark }) {
       <PricesPanel dark={dark} />
       <OffersPanel dark={dark} />
       <InventoryPanel dark={dark} />
-      <IncidentsPanel dark={dark} />
+      <IncidentsPanel dark={dark} user={user} />
       <OrdersOverviewPanel dark={dark} />
       <ExportPanel dark={dark} />
       {/* KPIs */}
@@ -7579,7 +7460,7 @@ function RexModal({
       total: order.total || 0,
       orderType: order.orderType || "delivery",
     };
-    RexDB.add(record);
+    await RexDB.add(record);
     await DriverOrdersDB.update(order.number, { cancelled: true });
     showToast?.("⚠️ Incident enregistré");
     onSubmitted?.();
@@ -7687,7 +7568,7 @@ function RexModal({
               <p className={`text-xs ${th.textSub(dark)} mb-1`}>Raison :</p>
               <p className={`text-sm font-semibold ${th.text(dark)}`}>
                 {REX_REASON_LABEL(reason)}
-                {reason === "other" ? ` — ${customReason}` : ""}
+                {reason === "other" ? ` - ${customReason}` : ""}
               </p>
               {comment && (
                 <>
@@ -7729,8 +7610,8 @@ function RiskBanner({ phone, address, dark, compact = false }) {
   const isBlocked = level >= 2;
   const bg = isBlocked ? "bg-red-500" : "bg-amber-500";
   const txt = isBlocked
-    ? `🚫 CLIENT BLOQUÉ — ${incidents.length} incidents — Paiement avance OBLIGATOIRE`
-    : `⚠️ ${incidents.length} incident — Vigilance + paiement avance recommandé`;
+    ? `🚫 CLIENT BLOQUÉ - ${incidents.length} incidents - Paiement avance OBLIGATOIRE`
+    : `⚠️ ${incidents.length} incident - Vigilance + paiement avance recommandé`;
   if (compact)
     return (
       <span
@@ -7750,7 +7631,7 @@ function RiskBanner({ phone, address, dark, compact = false }) {
           <ul className="mt-1.5 text-xs space-y-1">
             {incidents.slice(0, 5).map((i) => (
               <li key={i.id}>
-                • {new Date(i.createdAt).toLocaleDateString("fr-FR")} —{" "}
+                • {new Date(i.createdAt).toLocaleDateString("fr-FR")} -{" "}
                 {REX_REASON_LABEL(i.reason)}
                 {i.customReason ? ` (${i.customReason})` : ""}
               </li>
@@ -7901,7 +7782,7 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
         />
         {selected.cancelled && (
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
-            <p className="text-sm font-bold">❌ INCIDENT — Commande annulée</p>
+            <p className="text-sm font-bold">❌ INCIDENT - Commande annulée</p>
             <p className="text-xs mt-1">
               {REX_REASON_LABEL(
                 RexDB.list().find((r) => r.orderNumber === selected.number)
@@ -8265,7 +8146,7 @@ function DriverView({ onBack, dark, showToast }) {
   const [, setTick] = useState(0);
   // État local au livreur : commandes pour lesquelles il a déjà cliqué "Arrivé".
   // Pas persisté (1 colonne DB en moins). Si la page refresh, le livreur
-  // retape — c'est une fenêtre de quelques minutes max.
+  // retape - c'est une fenêtre de quelques minutes max.
   const arrivedRef = useRef(new Set());
 
   useEffect(() => {
@@ -8365,7 +8246,7 @@ function DriverView({ onBack, dark, showToast }) {
     if (isReadOnly) {
       actionBtn = (
         <div className="w-full bg-zinc-500/20 text-zinc-500 py-4 rounded-2xl font-bold text-center text-sm">
-          🔒 En attente — la caisse prépare la commande
+          🔒 En attente - la caisse prépare la commande
         </div>
       );
     } else if (selected.statusIdx === 2) {
@@ -8440,7 +8321,7 @@ function DriverView({ onBack, dark, showToast }) {
         {selected.cancelled && (
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
             <p className="text-sm font-bold">
-              ❌ INCIDENT —{" "}
+              ❌ INCIDENT -{" "}
               {REX_REASON_LABEL(
                 RexDB.list().find((r) => r.orderNumber === selected.number)
                   ?.reason,
@@ -9269,8 +9150,8 @@ function Footer({
           >
             🔍 Suivi de commande
           </button>
-          {/* Dashboard admin - uniquement housepizzayy.976@gmail.com */}
-          {isAdminEmail(user?.email) && (
+          {/* Dashboard admin */}
+          {user?.role === "admin" && (
             <button
               onClick={onAdmin}
               className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
@@ -9278,8 +9159,8 @@ function Footer({
               🛠️ Dashboard Admin
             </button>
           )}
-          {/* Interface livreur - uniquement housepizzalivreur@gmail.com */}
-          {isDriverEmail(user?.email) && (
+          {/* Interface livreur */}
+          {user?.role === "driver" && (
             <button
               onClick={onDriver}
               className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
@@ -9287,8 +9168,8 @@ function Footer({
               🛵 Interface Livreur
             </button>
           )}
-          {/* Interface caisse - rôle cashier */}
-          {isCashierEmail(user?.email) && (
+          {/* Interface caisse */}
+          {user?.role === "cashier" && (
             <button
               onClick={onCashier}
               className="flex items-center gap-2 bg-zinc-700 hover:bg-zinc-600 text-white text-xs font-bold px-4 py-2.5 rounded-xl active:scale-95 transition-all"
@@ -9355,34 +9236,36 @@ export default function HousePizza() {
   const [freeDrinkModal, setFreeDrinkModal] = useState(false); // boisson offerte Ø26
   const [confirmClear, setConfirmClear] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
-  const [user, setUser] = useState(() => SessionDB.load());
+  const [user, setUser] = useState(null);
   const [orderData, setOrderData] = useState(null);
   const [legalPage, setLegalPage] = useState(null);
   const { toasts, show: showToast } = useToast();
 
-  // ── Sécurité : auto-logout après 30 min d'inactivité ──
+  // ── Auth Supabase : chargement session au démarrage ──
   useEffect(() => {
-    if (!user) return;
-    SessionDB.save(user);
-    const handleActivity = () => SessionDB.touch();
-    const events = ["click", "keydown", "scroll", "touchstart"];
-    events.forEach((e) =>
-      window.addEventListener(e, handleActivity, { passive: true }),
-    );
-    // Vérification toutes les minutes
-    const interval = setInterval(() => {
-      const stillValid = SessionDB.load();
-      if (!stillValid) {
+    getCurrentUser().then(async (u) => {
+      if (!u) return;
+      const roleData = await getUserRole(u.id);
+      const userData = {
+        id: u.id,
+        email: u.email,
+        name: roleData?.name || u.email,
+        role: roleData?.role || null,
+      };
+      setUser(userData);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
         setUser(null);
         setStep("menu");
-        showToast("Session expirée - reconnectez-vous", "info");
       }
-    }, 60 * 1000);
-    return () => {
-      events.forEach((e) => window.removeEventListener(e, handleActivity));
-      clearInterval(interval);
-    };
-  }, [user, showToast]);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const {
     totalRaw,
@@ -9565,29 +9448,36 @@ export default function HousePizza() {
   };
 
   const handleLogin = (userData) => {
-    setUser(userData);
-    SessionDB.save(userData);
+    setUser({ ...userData, name: userData.name || userData.email, role: null });
     setShowAuth(false);
-    const email = userData.email?.toLowerCase() || "";
-    const role = getUserRole(email);
-    if (role === "admin") {
-      showToast(`👑 Bienvenue admin !`);
-      setStep("admin");
-    } else if (role === "cashier") {
-      showToast(`💼 Bienvenue, espace caisse`);
-      setStep("cashier");
-    } else if (role === "driver") {
-      showToast(`🛵 Bienvenue livreur !`);
-      setStep("driver");
-    } else {
-      showToast(`Bienvenue ${userData.name.split(" ")[0]} !`);
-    }
+    // Fetch rôle en arrière-plan
+    getUserRole(userData.id)
+      .then((roleData) => {
+        if (!roleData) return;
+        const enriched = {
+          ...userData,
+          role: roleData.role,
+          name: roleData.name || userData.email,
+        };
+        setUser(enriched);
+        if (roleData.role === "admin") {
+          showToast(`👑 Bienvenue admin !`);
+          setStep("admin");
+        } else if (roleData.role === "cashier") {
+          showToast(`💼 Bienvenue, espace caisse`);
+          setStep("cashier");
+        } else if (roleData.role === "driver") {
+          showToast(`🛵 Bienvenue livreur !`);
+          setStep("driver");
+        }
+      })
+      .catch((e) => console.log("getUserRole erreur", e));
   };
 
-  const handleLogout = () => {
-    setUser(null);
-    SessionDB.clear();
-    setStep("menu");
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } catch {}
     showToast("Déconnecté", "info");
   };
 
@@ -10072,7 +9962,7 @@ export default function HousePizza() {
           showToast={showToast}
           user={user}
           onSuccess={async (data) => {
-            // Persister la commande dans Supabase
+            // Persister la commande dans Supabase (payment_status='pending')
             try {
               const created = await createOrder({
                 ...data,
@@ -10080,13 +9970,36 @@ export default function HousePizza() {
               });
               setCart([]);
               setOrderData(created); // contient `id` + `number` généré par la DB
-              setStep("confirmation");
+              // Méthodes en ligne → passage par Stripe. Les autres (cash,
+              // ticket resto, Wero) → confirmation directe, paiement hors-ligne.
+              const ONLINE = ["online"];
+              if (ONLINE.includes(data.paymentMethod)) {
+                setStep("payment");
+              } else {
+                setStep("confirmation");
+              }
             } catch (e) {
               console.error("CREATE ORDER FAILED:", e);
               showToast?.("❌ Erreur enregistrement commande");
             }
           }}
         />
+      )}
+
+      {step === "payment" && orderData && (
+        <div className="max-w-md mx-auto p-4">
+          <h2 className={`text-lg font-bold mb-4 ${th.text(dark)}`}>
+            Paiement - commande #{orderData.number}
+          </h2>
+          <StripePaymentSheet
+            orderId={orderData.id}
+            amount={orderData.total}
+            dark={dark}
+            onPaid={() => setStep("confirmation")}
+            onError={(msg) => showToast?.(msg || "Paiement refusé", "error")}
+            onCancel={() => setStep("confirmation")}
+          />
+        </div>
       )}
 
       {step === "confirmation" && orderData && (
@@ -10098,7 +10011,7 @@ export default function HousePizza() {
       )}
 
       {step === "admin" && (
-        <AdminView dark={dark} onBack={() => setStep("menu")} />
+        <AdminView dark={dark} onBack={() => setStep("menu")} user={user} />
       )}
 
       {step === "cashier" && (

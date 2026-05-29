@@ -845,7 +845,7 @@ const BlacklistDB = {
     if (c === 1) return 1;
     return 2;
   },
-  // Liste des incidents affichables (RiskBanner) — sans les erreurs pizzeria
+  // Liste des incidents affichables (RiskBanner) - sans les erreurs pizzeria
   incidents(phone, address) {
     const rex = RexDB.load();
     const np = normPhone(phone);
@@ -3895,7 +3895,7 @@ function CheckoutView({
       e.phone = "Numéro invalide (06/07 métropole ou 0639/0692/0693 Mayotte)";
     if (isBlocked) {
       showToast(
-        "🚫 Commande bloquée — Trop d'incidents passés. Contactez House Pizza.",
+        "🚫 Commande bloquée - Trop d'incidents passés. Contactez House Pizza.",
         "error",
       );
       return;
@@ -3928,7 +3928,7 @@ function CheckoutView({
     }
     if (isBlocked) {
       showToast(
-        "🚫 Commande bloquée — 2+ incidents enregistrés. Contactez House Pizza directement.",
+        "🚫 Commande bloquée - 2+ incidents enregistrés. Contactez House Pizza directement.",
         "error",
       );
       return;
@@ -5623,7 +5623,7 @@ function IncidentsPanel({ dark }) {
                     </span>
                     {fault && (
                       <span className="text-[10px] bg-amber-500 text-white font-bold px-2 py-0.5 rounded-full">
-                        🍕 Erreur interne — sans conséquence client
+                        🍕 Erreur interne - sans conséquence client
                       </span>
                     )}
                     <span className={`ml-auto text-xs ${th.textSub(dark)}`}>
@@ -5631,14 +5631,14 @@ function IncidentsPanel({ dark }) {
                     </span>
                   </div>
                   <p className={`text-sm font-bold ${th.text(dark)}`}>
-                    {r.customer || "—"} · {r.phone || "—"}
+                    {r.customer || "-"} · {r.phone || "-"}
                   </p>
                   <p className={`text-xs ${th.textSub(dark)} truncate`}>
                     {r.address}
                   </p>
                   <p className="text-sm mt-1 text-red-500 font-semibold">
                     {REX_REASON_LABEL(r.reason)}
-                    {r.customReason ? ` — ${r.customReason}` : ""}
+                    {r.customReason ? ` - ${r.customReason}` : ""}
                   </p>
                   {r.comment && (
                     <p className={`text-xs italic mt-1 ${th.textSub(dark)}`}>
@@ -5671,7 +5671,7 @@ function IncidentsPanel({ dark }) {
                 </span>
                 <div className="flex-1 min-w-0">
                   <p className={`font-bold text-sm truncate ${th.text(dark)}`}>
-                    {c.customer || "—"}
+                    {c.customer || "-"}
                     {c.manualBlock && (
                       <span className="ml-2 text-[10px] font-bold text-red-500">
                         🛡️ MANUEL
@@ -5770,10 +5770,10 @@ function IncidentsPanel({ dark }) {
                       <p
                         className={`text-sm font-bold truncate ${th.text(dark)}`}
                       >
-                        {b.customer || "—"}
+                        {b.customer || "-"}
                       </p>
                       <p className={`text-xs ${th.textSub(dark)}`}>
-                        {b.phone || "—"} {b.address ? `· ${b.address}` : ""}
+                        {b.phone || "-"} {b.address ? `· ${b.address}` : ""}
                       </p>
                       <p className={`text-[10px] ${th.textSub(dark)}`}>
                         par {b.by} ·{" "}
@@ -5817,10 +5817,10 @@ function IncidentsPanel({ dark }) {
                       <p
                         className={`text-sm font-bold truncate ${th.text(dark)}`}
                       >
-                        {w.customer || "—"}
+                        {w.customer || "-"}
                       </p>
                       <p className={`text-xs ${th.textSub(dark)}`}>
-                        {w.phone || "—"} {w.address ? `· ${w.address}` : ""}
+                        {w.phone || "-"} {w.address ? `· ${w.address}` : ""}
                       </p>
                       <p className={`text-[10px] ${th.textSub(dark)}`}>
                         par {w.by} ·{" "}
@@ -6440,7 +6440,7 @@ function InventoryPanel({ dark }) {
                       +{h.qty} {selected.unit}
                     </p>
                     <p className={`text-[11px] ${th.textSub(dark)}`}>
-                      {h.supplier || "—"} ·{" "}
+                      {h.supplier || "-"} ·{" "}
                       {new Date(h.date).toLocaleDateString("fr-FR")}
                     </p>
                   </div>
@@ -6495,7 +6495,7 @@ function InventoryPanel({ dark }) {
                           )}
                         </div>
                         <p className={`text-xs ${th.textSub(dark)}`}>
-                          {it.supplier || "—"} · Acheté {it.buyPrice.toFixed(2)}{" "}
+                          {it.supplier || "-"} · Acheté {it.buyPrice.toFixed(2)}{" "}
                           €/{it.unit}
                         </p>
                         {it.lastBought && (
@@ -7814,7 +7814,7 @@ function RexModal({
               <p className={`text-xs ${th.textSub(dark)} mb-1`}>Raison :</p>
               <p className={`text-sm font-semibold ${th.text(dark)}`}>
                 {REX_REASON_LABEL(reason)}
-                {reason === "other" ? ` — ${customReason}` : ""}
+                {reason === "other" ? ` - ${customReason}` : ""}
               </p>
               {comment && (
                 <>
@@ -7856,8 +7856,8 @@ function RiskBanner({ phone, address, dark, compact = false }) {
   const isBlocked = level >= 2;
   const bg = isBlocked ? "bg-red-500" : "bg-amber-500";
   const txt = isBlocked
-    ? `🚫 CLIENT BLOQUÉ — ${incidents.length} incidents — Paiement avance OBLIGATOIRE`
-    : `⚠️ ${incidents.length} incident — Vigilance + paiement avance recommandé`;
+    ? `🚫 CLIENT BLOQUÉ - ${incidents.length} incidents - Paiement avance OBLIGATOIRE`
+    : `⚠️ ${incidents.length} incident - Vigilance + paiement avance recommandé`;
   if (compact)
     return (
       <span
@@ -7877,7 +7877,7 @@ function RiskBanner({ phone, address, dark, compact = false }) {
           <ul className="mt-1.5 text-xs space-y-1">
             {incidents.slice(0, 5).map((i) => (
               <li key={i.id}>
-                • {new Date(i.createdAt).toLocaleDateString("fr-FR")} —{" "}
+                • {new Date(i.createdAt).toLocaleDateString("fr-FR")} -{" "}
                 {REX_REASON_LABEL(i.reason)}
                 {i.customReason ? ` (${i.customReason})` : ""}
               </li>
@@ -8019,7 +8019,7 @@ function CashierView({ onBack, onNewOrder, dark, showToast }) {
         />
         {selected.cancelled && (
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
-            <p className="text-sm font-bold">❌ INCIDENT — Commande annulée</p>
+            <p className="text-sm font-bold">❌ INCIDENT - Commande annulée</p>
             <p className="text-xs mt-1">
               {REX_REASON_LABEL(selected.cancelReasonId)}
             </p>
@@ -8455,7 +8455,7 @@ function DriverView({ onBack, dark, showToast }) {
     if (isReadOnly) {
       actionBtn = (
         <div className="w-full bg-zinc-500/20 text-zinc-500 py-4 rounded-2xl font-bold text-center text-sm">
-          🔒 En attente — la caisse prépare la commande
+          🔒 En attente - la caisse prépare la commande
         </div>
       );
     } else if (selected.statusIdx === 2) {
@@ -8530,7 +8530,7 @@ function DriverView({ onBack, dark, showToast }) {
         {selected.cancelled && (
           <div className="bg-red-500 text-white rounded-2xl p-3 mb-3">
             <p className="text-sm font-bold">
-              ❌ INCIDENT — {REX_REASON_LABEL(selected.cancelReasonId)}
+              ❌ INCIDENT - {REX_REASON_LABEL(selected.cancelReasonId)}
             </p>
           </div>
         )}

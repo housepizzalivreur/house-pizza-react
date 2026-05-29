@@ -204,9 +204,11 @@ export async function getOrderById(id) {
 ═══════════════════════════════════════════════════ */
 
 export async function createOrder(order) {
+  const orderNumber = "HP-" + Date.now().toString(36).toUpperCase();
+
   const { data, error } = await supabase
     .from("orders")
-    .insert([toDbInsert(order)])
+    .insert([{ ...toDbInsert(order), order_number: orderNumber }])
     .select()
     .single();
 
@@ -268,4 +270,136 @@ export function subscribeOrders(onChange) {
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+/* ═══════════════════════════════════════════════════
+   AUTH
+═══════════════════════════════════════════════════ */
+
+export async function getCurrentUser() {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  return user;
+}
+
+export async function getUserRole(userId) {
+  const { data, error } = await supabase
+    .from("user_roles")
+    .select("role, name")
+    .eq("user_id", userId)
+    .single();
+  if (error) return null;
+  return data;
+}
+
+export async function signIn(email, password) {
+  const { data, error } = await supabase.auth.signInWithPassword({
+    email,
+    password,
+  });
+  if (error) throw error;
+  return data.user;
+}
+
+export async function signOut() {
+  await supabase.auth.signOut();
+}
+
+/* ═══════════════════════════════════════════════════
+   INCIDENTS (REX)
+═══════════════════════════════════════════════════ */
+
+export async function getIncidents() {
+  const { data, error } = await supabase
+    .from("incidents")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data || []).map((r) => ({
+    id: r.id,
+    orderNumber: r.order_number,
+    customer: r.customer || "",
+    phone: r.phone || "",
+    address: r.address || "",
+    reason: r.reason,
+    customReason: r.custom_reason || "",
+    comment: r.comment || "",
+    createdBy: r.created_by || "",
+    createdAt: r.created_at,
+  }));
+}
+
+export async function createIncident(incident) {
+  const { data, error } = await supabase
+    .from("incidents")
+    .insert({
+      order_number: incident.orderNumber,
+      customer: incident.customer || null,
+      phone: incident.phone || null,
+      address: incident.address || null,
+      reason: incident.reason,
+      custom_reason: incident.customReason || null,
+      comment: incident.comment || null,
+      created_by: incident.createdBy || null,
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteIncident(id) {
+  const { error } = await supabase.from("incidents").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* ═══════════════════════════════════════════════════
+   MENU ITEMS
+═══════════════════════════════════════════════════ */
+
+export async function getMenuItems() {
+  const { data, error } = await supabase
+    .from("menu_items")
+    .select("*")
+    .order("sort_order", { ascending: true });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function createMenuItem(item) {
+  const { data, error } = await supabase
+    .from("menu_items")
+    .insert(item)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateMenuItem(id, patch) {
+  const { data, error } = await supabase
+    .from("menu_items")
+    .update({ ...patch, updated_at: new Date().toISOString() })
+    .eq("id", id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteMenuItem(id) {
+  const { error } = await supabase.from("menu_items").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function seedMenuItems(items) {
+  const { data: existing } = await supabase
+    .from("menu_items")
+    .select("id")
+    .limit(1);
+  if (existing && existing.length > 0) return false;
+  const { error } = await supabase.from("menu_items").insert(items);
+  if (error) throw error;
+  return true;
 }
