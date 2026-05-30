@@ -9,6 +9,9 @@ import {
   useElements,
 } from "@stripe/react-stripe-js";
 
+console.log("STRIPE KEY =", import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
+alert(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
+
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY);
 const FN_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-payment-intent`;
 
