@@ -55,7 +55,7 @@ Deno.serve(async (req) => {
             .from("orders")
             .update({
               payment_status: "paid",
-              stripe_session_id: pi.id,
+              payment_intent_id: pi.id,
               updated_at: new Date().toISOString(),
             })
             .eq("id", orderId);

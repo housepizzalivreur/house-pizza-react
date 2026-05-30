@@ -33,7 +33,7 @@ Deno.serve(async (req) => {
 
     const { data: order, error } = await supabase
       .from("orders")
-      .select("total, stripe_session_id")
+      .select("total, payment_intent_id")
       .eq("id", order_id)
       .single();
 
@@ -41,9 +41,9 @@ Deno.serve(async (req) => {
       return json({ error: "Commande introuvable" }, 404);
     }
 
-    if (order.stripe_session_id) {
+    if (order.payment_intent_id) {
       const existing = await stripe.paymentIntents.retrieve(
-        order.stripe_session_id,
+        order.payment_intent_id,
       );
       if (existing.status !== "canceled" && existing.status !== "succeeded") {
         return json({ clientSecret: existing.client_secret });
@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
 
     await supabase
       .from("orders")
-      .update({ stripe_session_id: paymentIntent.id })
+      .update({ payment_intent_id: paymentIntent.id })
       .eq("id", order_id);
 
     return json({ clientSecret: paymentIntent.client_secret });
