@@ -423,6 +423,11 @@ export const updateSize = () => {};
 export const createSize = () => {};
 export const deleteSize = () => {};
 export const getConfig = () => {};
+export const setConfig = () => {};
+export const setConfigBatch = () => {};
+export const getOffers = () => {};
+export const getActiveOffers = () => {};
+export const createOffer = () => {};
 export async function uploadMenuImage(file) {
   const ext = file.name.split(".").pop() || "png";
   const path = `menu/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
