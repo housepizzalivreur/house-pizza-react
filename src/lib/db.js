@@ -96,6 +96,7 @@ function toDbInsert(o) {
   return {
     order_number: o.number,
     customer_name: o.customer || "",
+    customer_email: o.email || null,
     phone: o.phone || null,
     address: o.orderType === "delivery" ? o.address || null : null,
     address_type: o.orderType || "delivery",
@@ -446,7 +447,7 @@ export async function getBestSellerPizza() {
   const { data, error } = await supabase
     .from("orders")
     .select("items")
-    .in("payment_status", ["paid", "cash"])
+    .in("payment_status", ["paid", "confirmed"])
     .neq("status", "cancelled");
   if (error || !data) return null;
 
@@ -463,3 +464,164 @@ export async function getBestSellerPizza() {
   return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]; // nom de la pizza
 }
 
+/* ═══════════════════════════════════════════════════
+   PIZZA SIZES — tailles configurables
+═══════════════════════════════════════════════════ */
+
+export async function getSizes() {
+  const { data, error } = await supabase
+    .from("pizza_sizes")
+    .select("*")
+    .order("sort_order");
+  if (error) throw error;
+  return data || [];
+}
+
+export async function updateSize(id, patch) {
+  const { error } = await supabase
+    .from("pizza_sizes")
+    .update(patch)
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function createSize(row) {
+  const { error } = await supabase.from("pizza_sizes").insert(row);
+  if (error) throw error;
+}
+
+export async function deleteSize(id) {
+  const { error } = await supabase.from("pizza_sizes").delete().eq("id", id);
+  if (error) throw error;
+}
+
+/* ═══════════════════════════════════════════════════
+   SITE CONFIG — réglages globaux clé/valeur
+═══════════════════════════════════════════════════ */
+
+export async function getConfig() {
+  const { data, error } = await supabase.from("site_config").select("*");
+  if (error) throw error;
+  const obj = {};
+  for (const row of data || []) obj[row.key] = row.value;
+  return obj;
+}
+
+export async function setConfig(key, value) {
+  const { error } = await supabase
+    .from("site_config")
+    .upsert({ key, value, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
+export async function setConfigBatch(entries) {
+  const rows = Object.entries(entries).map(([key, value]) => ({
+    key,
+    value,
+    updated_at: new Date().toISOString(),
+  }));
+  const { error } = await supabase.from("site_config").upsert(rows);
+  if (error) throw error;
+}
+
+/* ═══════════════════════════════════════════════════
+   OFFERS — offres promotionnelles (Supabase)
+═══════════════════════════════════════════════════ */
+
+export async function getOffers() {
+  const { data, error } = await supabase
+    .from("offers")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+}
+
+export async function getActiveOffers() {
+  const { data, error } = await supabase
+    .from("offers")
+    .select("*")
+    .eq("active", true)
+    .or("valid_from.is.null,valid_from.lte.now()")
+    .or("valid_to.is.null,valid_to.gte.now()")
+    .order("sort_order");
+  if (error) throw error;
+  // Filtrer max_uses côté client
+  return (data || []).filter(
+    (o) => !o.max_uses || (o.used_count || 0) < o.max_uses,
+  );
+}
+
+export async function createOffer(offer) {
+  const { data, error } = await supabase
+    .from("offers")
+    .insert(offer)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateOffer(id, patch) {
+  const clean = { ...patch, updated_at: new Date().toISOString() };
+  delete clean.id;
+  delete clean.created_at;
+  const { error } = await supabase
+    .from("offers")
+    .update(clean)
+    .eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteOffer(id) {
+  const { error } = await supabase.from("offers").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function incrementOfferUsage(id) {
+  const { data } = await supabase
+    .from("offers")
+    .select("used_count")
+    .eq("id", id)
+    .single();
+  await supabase
+    .from("offers")
+    .update({ used_count: (data?.used_count || 0) + 1 })
+    .eq("id", id);
+}
+
+/* ═══════════════════════════════════════════════════
+   HISTORIQUE COMMANDES CLIENT
+   Cherche par email (le seul identifiant fiable en Supabase Auth)
+═══════════════════════════════════════════════════ */
+
+export async function getOrdersByEmail(email) {
+  if (!email) return [];
+  const { data, error } = await supabase
+    .from("orders")
+    .select("order_number, items, total, status, created_at, address, address_type")
+    .eq("customer_email", email)
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    // Fallback : la colonne customer_email peut ne pas exister → renvoyer []
+    console.warn("getOrdersByEmail:", error.message);
+    return [];
+  }
+  return (data || []).map((row) => ({
+    number: row.order_number,
+    items: Array.isArray(row.items) ? row.items : [],
+    total: Number(row.total || 0),
+    status: row.status || "new",
+    createdAt: row.created_at,
+    orderType: row.address_type || (row.address ? "delivery" : "pickup"),
+  }));
+}
+
+export async function updateUserProfile(patch) {
+  // Met à jour les métadonnées Supabase Auth (full_name visible dans user_metadata)
+  const { error } = await supabase.auth.updateUser({
+    data: { full_name: patch.name },
+  });
+  if (error) throw error;
+}

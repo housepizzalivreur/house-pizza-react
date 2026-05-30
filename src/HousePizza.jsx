@@ -61,6 +61,21 @@ import {
   uploadMenuImage,
   deleteMenuImage,
   getBestSellerPizza,
+  getSizes,
+  updateSize,
+  createSize,
+  deleteSize,
+  getConfig,
+  setConfig,
+  setConfigBatch,
+  getOffers,
+  getActiveOffers,
+  createOffer,
+  updateOffer,
+  deleteOffer,
+  incrementOfferUsage,
+  getOrdersByEmail,
+  updateUserProfile,
 } from "./lib/db";
 
 /* ═══════════════════════════════════════════════════
@@ -558,6 +573,7 @@ function useMenuData() {
       medium: PIZZA_PRICE_MEDIUM_STD,
       small: PIZZA_PRICE_SMALL,
     },
+    promoPrices: row.promo_prices || null, // { "large": 12 } ou null
     bestSeller: bsName ? row.name === bsName : false,
     image: resolveMenuImage(row),
     active: row.active !== false,
@@ -606,6 +622,122 @@ function useMenuData() {
   }, [loadMenu]);
 
   return { pizzas, drinks, bestSellerName, menuLoaded, reloadMenu: loadMenu };
+}
+
+/* ═══════════════════════════════════════════════════
+   OFFERS HOOK - charge les offres depuis Supabase
+═══════════════════════════════════════════════════ */
+function useOffers() {
+  const [allOffers, setAllOffers] = useState([]);
+  const [activeOffers, setActiveOffers] = useState([]);
+  const [offersLoaded, setOffersLoaded] = useState(false);
+
+  const loadOffers = useCallback(async () => {
+    try {
+      const [all, active] = await Promise.all([
+        getOffers().catch(() => []),
+        getActiveOffers().catch(() => []),
+      ]);
+      setAllOffers(all);
+      setActiveOffers(active);
+    } catch {}
+    setOffersLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    loadOffers();
+  }, [loadOffers]);
+
+  return { allOffers, activeOffers, offersLoaded, reloadOffers: loadOffers };
+}
+
+/* ═══════════════════════════════════════════════════
+   SITE CONFIG HOOK - réglages globaux depuis Supabase
+   Fallback sur PricesDB localStorage si DB indisponible
+═══════════════════════════════════════════════════ */
+function useSiteConfig() {
+  const [config, setConfigState] = useState({
+    extra_price: 2,
+    delivery_fee_no_pizza: 2,
+    min_order_amount: 5,
+    delivery_fee: 0,
+    free_drink_with_small: true,
+  });
+  const [configLoaded, setConfigLoaded] = useState(false);
+
+  const loadConfig = useCallback(async () => {
+    try {
+      const cfg = await getConfig();
+      setConfigState((prev) => ({ ...prev, ...cfg }));
+    } catch (err) {
+      console.warn("Config DB unavailable, using defaults:", err.message);
+    }
+    setConfigLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const saveConfig = useCallback(async (key, value) => {
+    try {
+      await setConfig(key, value);
+      setConfigState((prev) => ({ ...prev, [key]: value }));
+    } catch (err) {
+      console.warn("Config save failed:", err.message);
+    }
+  }, []);
+
+  return { config, configLoaded, saveConfig, reloadConfig: loadConfig };
+}
+
+/* ═══════════════════════════════════════════════════
+   PIZZA SIZES HOOK - tailles configurables
+═══════════════════════════════════════════════════ */
+function usePizzaSizes() {
+  const [sizes, setSizes] = useState([
+    {
+      id: "small",
+      label: "Ø26",
+      display: "Petite",
+      default_price: 9.9,
+      sort_order: 1,
+      active: true,
+    },
+    {
+      id: "medium",
+      label: "Ø29",
+      display: "Moyenne",
+      default_price: 11.9,
+      sort_order: 2,
+      active: true,
+    },
+    {
+      id: "large",
+      label: "Ø33",
+      display: "Grande",
+      default_price: 14.0,
+      sort_order: 3,
+      active: true,
+    },
+  ]);
+  const [sizesLoaded, setSizesLoaded] = useState(false);
+
+  const loadSizes = useCallback(async () => {
+    try {
+      const rows = await getSizes();
+      if (rows.length > 0) setSizes(rows);
+    } catch {}
+    setSizesLoaded(true);
+  }, []);
+
+  useEffect(() => {
+    loadSizes();
+  }, [loadSizes]);
+
+  const activeSizes = sizes.filter((s) => s.active !== false);
+
+  return { sizes, activeSizes, sizesLoaded, reloadSizes: loadSizes };
 }
 
 /* ═══════════════════════════════════════════════════
@@ -2984,11 +3116,45 @@ function AddressAutocomplete({
    PIZZA CARD
 ═══════════════════════════════════════════════════ */
 
-function PizzaCard({ pizza, onSelect, dark }) {
-  // Compatibilité ascendante : on lit pizza.prices.X OU pizza.X direct
-  const priceLarge = PricesDB.pizzaPrice(pizza, "large");
-  const priceMedium = PricesDB.pizzaPrice(pizza, "medium");
-  const priceSmall = PricesDB.pizzaPrice(pizza, "small");
+function PizzaCard({ pizza, onSelect, dark, activeOffers }) {
+  const priceLarge = pizza.prices?.large;
+  const priceMedium = pizza.prices?.medium;
+  const priceSmall = pizza.prices?.small;
+  const promoLarge = pizza.promoPrices?.large;
+  const promoMedium = pizza.promoPrices?.medium;
+  const promoSmall = pizza.promoPrices?.small;
+
+  // Vérifie si une offre touche cette pizza
+  const hasOffer = activeOffers?.some(
+    (o) => o.scope === "all" || o.scope === "pizza",
+  );
+
+  // Affiche un prix : si promo → barré + promo, sinon normal
+  const PriceCol = ({ label, price, promo, color, emoji }) => (
+    <span className="flex flex-col items-center">
+      <span
+        className={`text-[10px] ${color ? `${color} font-semibold` : "opacity-70"}`}
+      >
+        {label} {emoji || ""}
+      </span>
+      {promo != null ? (
+        <span className="flex items-center gap-1">
+          <span
+            className={`text-[10px] line-through opacity-50 ${th.textSub(dark)}`}
+          >
+            {Number(price).toFixed(2).replace(".", ",")}€
+          </span>
+          <span className="font-bold text-sm text-amber-500">
+            {Number(promo).toFixed(2).replace(".", ",")}€
+          </span>
+        </span>
+      ) : (
+        <span className={`font-bold text-sm ${color || th.text(dark)}`}>
+          {Number(price).toFixed(2).replace(".", ",")}€
+        </span>
+      )}
+    </span>
+  );
 
   return (
     <div
@@ -2996,7 +3162,6 @@ function PizzaCard({ pizza, onSelect, dark }) {
       className={`rounded-3xl p-5 shadow-sm border cursor-pointer active:scale-[0.98] transition-all group ${th.card(dark)} ${th.cardHover(dark)}`}
     >
       <div className="flex items-start justify-between mb-3">
-        {/* Image de la pizza, fallback sur emoji si absente */}
         {pizza.image ? (
           <img
             src={pizza.image}
@@ -3007,11 +3172,23 @@ function PizzaCard({ pizza, onSelect, dark }) {
         ) : (
           <span className="text-4xl">{pizza.emoji}</span>
         )}
-        {pizza.bestSeller && (
-          <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
-            🔥 Best Seller
-          </span>
-        )}
+        <div className="flex flex-col items-end gap-1">
+          {pizza.bestSeller && (
+            <span className="bg-red-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+              🔥 Best Seller
+            </span>
+          )}
+          {hasOffer && (
+            <span className="bg-purple-600 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+              🎁 Offre
+            </span>
+          )}
+          {(promoLarge || promoMedium || promoSmall) && (
+            <span className="bg-amber-500 text-white text-[10px] font-bold px-2 py-0.5 rounded-full">
+              🏷️ Promo
+            </span>
+          )}
+        </div>
       </div>
       <p
         className={`text-xs font-medium uppercase tracking-wide mb-1 ${th.label(dark)}`}
@@ -3028,39 +3205,31 @@ function PizzaCard({ pizza, onSelect, dark }) {
       </p>
       <div className="flex items-center justify-between">
         <div className={`flex gap-2 text-xs ${th.textSub(dark)}`}>
-          {/* Ø33 affiché seulement si le prix existe */}
           {priceLarge != null && (
             <>
-              <span className="flex flex-col items-center">
-                <span className="text-[10px] opacity-70">Ø33</span>
-                <span className={`font-bold text-sm ${th.text(dark)}`}>
-                  {Number(priceLarge).toFixed(2).replace(".", ",")}€
-                </span>
-              </span>
+              <PriceCol label="Ø33" price={priceLarge} promo={promoLarge} />
               <span
                 className={`w-px self-stretch ${dark ? "bg-zinc-700" : "bg-gray-200"}`}
               />
             </>
           )}
-          <span className="flex flex-col items-center">
-            <span className="text-[10px] text-amber-500 font-semibold">
-              Ø29 ✨
-            </span>
-            <span className="font-bold text-sm text-amber-500">
-              {Number(priceMedium).toFixed(2).replace(".", ",")}€
-            </span>
-          </span>
+          <PriceCol
+            label="Ø29"
+            price={priceMedium}
+            promo={promoMedium}
+            color="text-amber-500"
+            emoji="✨"
+          />
           <span
             className={`w-px self-stretch ${dark ? "bg-zinc-700" : "bg-gray-200"}`}
           />
-          <span className="flex flex-col items-center">
-            <span className="text-[10px] text-orange-500 font-semibold">
-              Ø26 🎁
-            </span>
-            <span className="font-bold text-sm text-orange-500">
-              {Number(priceSmall).toFixed(2).replace(".", ",")}€
-            </span>
-          </span>
+          <PriceCol
+            label="Ø26"
+            price={priceSmall}
+            promo={promoSmall}
+            color="text-orange-500"
+            emoji="🎁"
+          />
         </div>
         <div className="w-9 h-9 bg-emerald-600 rounded-xl flex items-center justify-center text-white text-xl font-bold group-hover:bg-emerald-700 transition-colors">
           +
@@ -3074,15 +3243,17 @@ function PizzaCard({ pizza, onSelect, dark }) {
    PIZZA MODAL - avec choix de pâte
 ═══════════════════════════════════════════════════ */
 
-function PizzaModal({ pizza, onClose, onAdd, dark }) {
+function PizzaModal({ pizza, onClose, onAdd, dark, siteConfig }) {
   const [size, setSize] = useState("large");
   const [crust, setCrust] = useState("classique");
   const [extras, setExtras] = useState([]);
   const toggle = (e) =>
     setExtras((p) => (p.includes(e) ? p.filter((x) => x !== e) : [...p, e]));
-  const extraUnitPrice = PricesDB.extraPrice();
-  const price =
-    PricesDB.pizzaPrice(pizza, size) + extras.length * extraUnitPrice;
+  const extraUnitPrice = siteConfig?.extra_price ?? PricesDB.extraPrice();
+  const basePrice = pizza.promoPrices?.[size] ?? pizza.prices?.[size] ?? 0;
+  const price = basePrice + extras.length * extraUnitPrice;
+  const originalPrice =
+    pizza.promoPrices?.[size] != null ? pizza.prices?.[size] : null;
 
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-[80] flex items-end sm:items-center justify-center">
@@ -3610,6 +3781,7 @@ function CartView({
   missingForMin,
   offerDiscount = 0,
   offerLabel = "",
+  activeOffers = [],
 }) {
   return (
     <div className="max-w-2xl mx-auto px-4 pb-32 pt-6">
@@ -3624,7 +3796,7 @@ function CartView({
       </div>
 
       {/* Bannière offres actives */}
-      <OffersCartBanner dark={dark} />
+      <OffersCartBanner dark={dark} offers={activeOffers} />
 
       <div
         className={`rounded-3xl shadow-sm border mb-4 ${th.card(dark)} ${th.divider(dark)}`}
@@ -3940,45 +4112,6 @@ function CheckoutView({
     if (submitting) return;
     setSubmitting(true);
 
-    // --- Paiement en espèces ---
-    if (paymentMethod === "cash") {
-      try {
-        // Marquer le code promo comme utilisé
-        if (promoResult?.valid && promoCode.trim()) {
-          markPromoCodeUsed(promoCode.trim(), form.phone);
-        }
-
-        onSuccess({
-          total: finalTotal,
-          subtotal:
-            finalTotal + (promoResult?.valid ? promoResult.discount : 0),
-          orderType,
-          paymentMethod,
-          promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
-          promoDiscount: promoResult?.valid ? promoResult.discount : 0,
-          customer: sanitize(form.name),
-          phone: form.phone,
-          address:
-            orderType === "delivery"
-              ? [deliveryAddress, deliveryVillage].filter(Boolean).join(", ")
-              : "",
-          notes: sanitize(form.notes),
-          whatsappOptIn: wantsWhatsApp,
-          whatsappNumber: wantsWhatsApp ? toWhatsAppNumber(form.phone) : null,
-          items: cart
-            ? cart.map((it, i) => ({ ...it, idx: i, ready: false }))
-            : [],
-        });
-
-        setSubmitting(false);
-      } catch (err) {
-        showToast("Erreur enregistrement commande", "error");
-        setSubmitting(false);
-      }
-
-      return;
-    }
-
     // --- Paiement hors-ligne (wero, carteresto) ---
     if (paymentMethod === "wero" || paymentMethod === "carteresto") {
       try {
@@ -3994,6 +4127,7 @@ function CheckoutView({
           promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
           promoDiscount: promoResult?.valid ? promoResult.discount : 0,
           customer: sanitize(form.name),
+          email: form.email || "",
           phone: form.phone,
           address:
             orderType === "delivery"
@@ -4030,6 +4164,7 @@ function CheckoutView({
           promoCode: promoResult?.valid ? promoCode.toUpperCase() : null,
           promoDiscount: promoResult?.valid ? promoResult.discount : 0,
           customer: sanitize(form.name),
+          email: form.email || "",
           phone: form.phone,
           address:
             orderType === "delivery"
@@ -4190,8 +4325,6 @@ function CheckoutView({
               <span className="inline-block animate-spin">⏳</span>{" "}
               Traitement...
             </>
-          ) : paymentMethod === "cash" ? (
-            <>✅ Confirmer la commande</>
           ) : (
             <>🔒 Payer {total.toFixed(2)}€</>
           )}
@@ -6607,361 +6740,355 @@ function InventoryPanel({ dark }) {
 }
 
 /* ═══════════════════════════════════════════════════
-   OFFERS PANEL - offres admin automatiques
+   OFFERS PANEL - offres promotionnelles (Supabase)
+   Templates visuels + création simplifiée
 ═══════════════════════════════════════════════════ */
-const OFFER_TYPES = [
-  { id: "pct", label: "−% sur articles ciblés", icon: "%" },
-  { id: "fixed", label: "−€ montant fixe", icon: "€" },
-  { id: "2for1", label: "2 pour 1", icon: "2×1" },
-  { id: "free_drink", label: "Boisson offerte avec une pizza", icon: "🥤" },
-  { id: "fixed_price", label: "Prix fixe temporaire", icon: "🏷️" },
+
+const OFFER_TEMPLATES = [
+  {
+    type: "pct",
+    icon: "🏷️",
+    title: "Remise %",
+    hint: "Ex : −20% sur toutes les pizzas",
+    needsValue: true,
+    valueLabel: "Pourcentage",
+    valuePlaceholder: "20",
+    defaultLabel: "Promo −{value}%",
+    defaultDesc: "Profitez de −{value}% sur votre commande !",
+  },
+  {
+    type: "fixed",
+    icon: "💰",
+    title: "Remise €",
+    hint: "Ex : −3€ sur la commande",
+    needsValue: true,
+    valueLabel: "Montant (€)",
+    valuePlaceholder: "3",
+    defaultLabel: "−{value}€ offerts",
+    defaultDesc: "−{value}€ de réduction immédiate !",
+  },
+  {
+    type: "2for1",
+    icon: "🍕",
+    title: "2 pour 1",
+    hint: "2 pizzas, la moins chère offerte",
+    needsValue: false,
+    defaultLabel: "2 pizzas pour le prix d'1",
+    defaultDesc: "Commandez 2 pizzas, la moins chère est offerte !",
+  },
+  {
+    type: "free_drink",
+    icon: "🥤",
+    title: "Boisson offerte",
+    hint: "1 boisson offerte avec chaque pizza",
+    needsValue: false,
+    defaultLabel: "Boisson offerte",
+    defaultDesc: "1 boisson offerte pour toute pizza commandée !",
+  },
+  {
+    type: "fixed_price",
+    icon: "⚡",
+    title: "Prix flash",
+    hint: "Toutes les pizzas à X€",
+    needsValue: true,
+    valueLabel: "Prix (€)",
+    valuePlaceholder: "9.90",
+    defaultLabel: "Toutes les pizzas à {value}€",
+    defaultDesc: "Prix exceptionnel : toutes les pizzas à {value}€ !",
+  },
 ];
 
-const SIZE_LABELS = { large: "Ø33", medium: "Ø29", small: "Ø26" };
-const ALL_SIZES = ["large", "medium", "small"];
+function OffersPanel({ dark, onOffersChange }) {
+  const [offers, setOffers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [template, setTemplate] = useState(null);
+  const [form, setForm] = useState({});
+  const [error, setError] = useState(null);
+  const [saved, setSaved] = useState(false);
 
-const emptyOffer = () => ({
-  label: "",
-  type: "pct",
-  value: "",
-  scope: "all", // all | pizza | drink
-  pizzaIds: [], // [] = toutes
-  sizes: [], // [] = toutes
-  drinkIds: [], // [] = toutes
-  validFrom: "",
-  validTo: "",
-  maxUses: "",
-});
-
-function OfferForm({ initial, onSave, onCancel, dark }) {
-  const [form, setForm] = useState(initial || emptyOffer());
-  const [err, setErr] = useState({});
-
-  const f = (key, val) => setForm((p) => ({ ...p, [key]: val }));
-
-  const toggleArr = (key, val) =>
-    setForm((p) => ({
-      ...p,
-      [key]: p[key].includes(val)
-        ? p[key].filter((x) => x !== val)
-        : [...p[key], val],
-    }));
-
-  const validate = () => {
-    const e = {};
-    if (!form.label.trim()) e.label = "Libellé requis";
-    if (form.type !== "2for1" && form.type !== "free_drink") {
-      if (
-        !form.value ||
-        isNaN(parseFloat(form.value)) ||
-        parseFloat(form.value) <= 0
-      )
-        e.value = "Valeur requise";
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const rows = await getOffers();
+      setOffers(rows);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
-    return e;
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const notify = () => {
+    if (onOffersChange) onOffersChange();
   };
 
-  const handleSave = () => {
-    const e = validate();
-    if (Object.keys(e).length) {
-      setErr(e);
+  // Démarrer la création avec un template
+  const pickTemplate = (tpl) => {
+    setTemplate(tpl);
+    setForm({
+      label: tpl.defaultLabel.replace("{value}", ""),
+      description: tpl.defaultDesc.replace("{value}", ""),
+      type: tpl.type,
+      value: "",
+      scope: "all",
+      valid_from: "",
+      valid_to: "",
+    });
+    setCreating(true);
+    setEditId(null);
+  };
+
+  // Éditer une offre existante
+  const startEdit = (offer) => {
+    const tpl = OFFER_TEMPLATES.find((t) => t.type === offer.type);
+    setTemplate(tpl || OFFER_TEMPLATES[0]);
+    setForm({
+      label: offer.label || "",
+      description: offer.description || "",
+      type: offer.type,
+      value: offer.value ? String(offer.value) : "",
+      scope: offer.scope || "all",
+      valid_from: offer.valid_from
+        ? new Date(offer.valid_from).toISOString().slice(0, 16)
+        : "",
+      valid_to: offer.valid_to
+        ? new Date(offer.valid_to).toISOString().slice(0, 16)
+        : "",
+    });
+    setEditId(offer.id);
+    setCreating(false);
+  };
+
+  const cancel = () => {
+    setCreating(false);
+    setEditId(null);
+    setTemplate(null);
+  };
+
+  const handleSave = async () => {
+    if (!form.label?.trim()) {
+      setError("Libellé requis");
       return;
     }
-    const target = {
-      scope: form.scope,
-      pizzaIds: form.pizzaIds,
-      sizes: form.sizes,
-      drinkIds: form.drinkIds,
-    };
-    onSave({
-      label: form.label.trim(),
-      type: form.type,
-      value: parseFloat(form.value) || 0,
-      target,
-      validFrom: form.validFrom ? new Date(form.validFrom).getTime() : null,
-      validTo: form.validTo ? new Date(form.validTo).getTime() : null,
-      maxUses: parseInt(form.maxUses) || null,
-    });
+    setError(null);
+    try {
+      const payload = {
+        label: form.label.trim(),
+        description: form.description?.trim() || null,
+        type: form.type,
+        value: parseFloat(form.value) || 0,
+        scope: form.scope,
+        conditions: {},
+        valid_from: form.valid_from
+          ? new Date(form.valid_from).toISOString()
+          : null,
+        valid_to: form.valid_to ? new Date(form.valid_to).toISOString() : null,
+        active: true,
+      };
+      if (editId) {
+        await updateOffer(editId, payload);
+      } else {
+        await createOffer(payload);
+      }
+      await load();
+      notify();
+      cancel();
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
-  const inp = (hasErr) =>
-    `w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none transition-colors ${hasErr ? th.inputErr(dark) : th.input(dark)}`;
-  const chip = (active) =>
-    `px-2.5 py-1 rounded-lg text-xs font-bold border-2 cursor-pointer transition-all active:scale-95 ${active ? "bg-emerald-600 text-white border-emerald-600" : th.btnGhost(dark)}`;
+  const toggleOffer = async (id, active) => {
+    try {
+      await updateOffer(id, { active });
+      await load();
+      notify();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
 
-  return (
-    <div className={`rounded-2xl border p-4 space-y-4 ${th.border(dark)}`}>
-      {/* Libellé */}
-      <div>
-        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-          Libellé de l'offre *
-        </label>
-        <input
-          value={form.label}
-          onChange={(e) => f("label", e.target.value)}
-          placeholder="Ex : Happy Hour Ø33"
-          className={`${inp(err.label)} mt-1`}
-        />
-        {err.label && <p className="text-red-500 text-xs mt-1">{err.label}</p>}
+  const removeOffer = async (id) => {
+    if (!window.confirm("Supprimer cette offre ?")) return;
+    try {
+      await deleteOffer(id);
+      await load();
+      notify();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  // Auto-fill le label et la description quand la valeur change
+  const updateValue = (val) => {
+    const fv = { ...form, value: val };
+    if (template) {
+      fv.label = template.defaultLabel.replace("{value}", val);
+      fv.description = template.defaultDesc.replace("{value}", val);
+    }
+    setForm(fv);
+  };
+
+  const now = new Date();
+  const isExpired = (o) => o.valid_to && new Date(o.valid_to) < now;
+  const isPending = (o) => o.valid_from && new Date(o.valid_from) > now;
+
+  const statusOf = (o) => {
+    if (!o.active) return { label: "⏸ Pausée", color: "text-zinc-400" };
+    if (isExpired(o)) return { label: "❌ Expirée", color: "text-red-500" };
+    if (isPending(o)) return { label: "⏳ À venir", color: "text-amber-500" };
+    return { label: "✅ Active", color: "text-emerald-500" };
+  };
+
+  const badgeValue = (o) => {
+    if (o.type === "pct") return `−${o.value}%`;
+    if (o.type === "fixed") return `−${o.value}€`;
+    if (o.type === "2for1") return "2 pour 1";
+    if (o.type === "free_drink") return "🥤 Offerte";
+    if (o.type === "fixed_price") return `${o.value}€`;
+    return "";
+  };
+
+  const inputCls = `w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none transition-colors ${th.input(dark)}`;
+
+  // ── Formulaire de création/édition ──
+  const renderForm = () => (
+    <div
+      className={`rounded-2xl border p-5 mb-4 space-y-4 ${dark ? "bg-zinc-800/50 border-zinc-700" : "bg-purple-50/60 border-purple-200"}`}
+    >
+      <div className="flex items-center gap-2 mb-1">
+        <span className="text-2xl">{template?.icon || "🎁"}</span>
+        <h4 className={`font-bold ${th.text(dark)}`}>
+          {editId ? "Modifier l'offre" : template?.title || "Nouvelle offre"}
+        </h4>
       </div>
 
-      {/* Type */}
+      {/* Libellé */}
       <div>
-        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-          Type d'offre
+        <label
+          className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+        >
+          Titre de l'offre *
         </label>
-        <div className="flex flex-wrap gap-2 mt-2">
-          {OFFER_TYPES.map((t) => (
-            <button
-              key={t.id}
-              onClick={() => f("type", t.id)}
-              className={`${chip(form.type === t.id)} text-xs`}
-            >
-              {t.icon} {t.label}
-            </button>
-          ))}
-        </div>
+        <input
+          className={inputCls}
+          value={form.label || ""}
+          onChange={(e) => setForm({ ...form, label: e.target.value })}
+          placeholder="Ex : Promo week-end"
+        />
+      </div>
+
+      {/* Description client */}
+      <div>
+        <label
+          className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+        >
+          Description (vue client)
+        </label>
+        <input
+          className={inputCls}
+          value={form.description || ""}
+          onChange={(e) => setForm({ ...form, description: e.target.value })}
+          placeholder="Ce que le client verra"
+        />
       </div>
 
       {/* Valeur */}
-      {form.type !== "2for1" && form.type !== "free_drink" && (
+      {template?.needsValue && (
         <div>
-          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-            {form.type === "pct"
-              ? "Remise (%)"
-              : form.type === "fixed"
-                ? "Remise (€)"
-                : "Prix fixe (€)"}{" "}
-            *
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            {template.valueLabel} *
           </label>
           <input
             type="number"
             min="0"
             step="0.1"
+            className={inputCls}
             value={form.value}
-            onChange={(e) => f("value", e.target.value)}
-            placeholder={form.type === "pct" ? "Ex : 20" : "Ex : 2.00"}
-            className={`${inp(err.value)} mt-1`}
+            onChange={(e) => updateValue(e.target.value)}
+            placeholder={template.valuePlaceholder}
           />
-          {err.value && (
-            <p className="text-red-500 text-xs mt-1">{err.value}</p>
-          )}
         </div>
       )}
 
-      {/* Portée */}
-      <div>
-        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-          Portée
-        </label>
-        <div className="flex gap-2 mt-2">
-          {[
-            { id: "all", label: "Tous" },
-            { id: "pizza", label: "Pizzas" },
-            { id: "drink", label: "Boissons" },
-          ].map((s) => (
-            <button
-              key={s.id}
-              onClick={() => f("scope", s.id)}
-              className={chip(form.scope === s.id)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Sélection pizzas */}
-      {(form.scope === "pizza" || form.scope === "all") &&
-        form.type !== "free_drink" && (
-          <div>
-            <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-              Pizzas ciblées{" "}
-              <span className={`font-normal ${th.textSub(dark)}`}>
-                (vide = toutes)
-              </span>
-            </label>
-            <div className="flex flex-wrap gap-1.5 mt-2 max-h-32 overflow-y-auto">
-              {PIZZAS.map((p) => (
-                <button
-                  key={p.id}
-                  onClick={() => toggleArr("pizzaIds", p.id)}
-                  className={chip(form.pizzaIds.includes(p.id))}
-                >
-                  {p.name}
-                </button>
-              ))}
-            </div>
-            <label
-              className={`text-xs font-semibold mt-3 block ${th.textSub(dark)}`}
-            >
-              Tailles ciblées{" "}
-              <span className={`font-normal ${th.textSub(dark)}`}>
-                (vide = toutes)
-              </span>
-            </label>
-            <div className="flex gap-2 mt-2">
-              {ALL_SIZES.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => toggleArr("sizes", s)}
-                  className={chip(form.sizes.includes(s))}
-                >
-                  {SIZE_LABELS[s]}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-
-      {/* Sélection boissons */}
-      {(form.scope === "drink" || form.type === "free_drink") && (
-        <div>
-          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-            Boissons ciblées{" "}
-            <span className={`font-normal ${th.textSub(dark)}`}>
-              (vide = toutes)
-            </span>
-          </label>
-          <div className="flex flex-wrap gap-1.5 mt-2 max-h-32 overflow-y-auto">
-            {DRINKS.map((d) => (
-              <button
-                key={d.id}
-                onClick={() => toggleArr("drinkIds", d.id)}
-                className={chip(form.drinkIds.includes(d.id))}
-              >
-                {d.name}
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Validité */}
+      {/* Dates */}
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-            Valide du
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Du (optionnel)
           </label>
           <input
             type="datetime-local"
-            value={form.validFrom}
-            onChange={(e) => f("validFrom", e.target.value)}
-            className={`${inp(false)} mt-1`}
+            className={inputCls}
+            value={form.valid_from || ""}
+            onChange={(e) => setForm({ ...form, valid_from: e.target.value })}
           />
         </div>
         <div>
-          <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-            Au
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Au (optionnel)
           </label>
           <input
             type="datetime-local"
-            value={form.validTo}
-            onChange={(e) => f("validTo", e.target.value)}
-            className={`${inp(false)} mt-1`}
+            className={inputCls}
+            value={form.valid_to || ""}
+            onChange={(e) => setForm({ ...form, valid_to: e.target.value })}
           />
         </div>
       </div>
-      <div>
-        <label className={`text-xs font-semibold ${th.textSub(dark)}`}>
-          Plafond d'usages (laisser vide = illimité)
-        </label>
-        <input
-          type="number"
-          min="1"
-          step="1"
-          value={form.maxUses}
-          onChange={(e) => f("maxUses", e.target.value)}
-          placeholder="Ex : 50"
-          className={`${inp(false)} mt-1`}
-        />
+
+      {/* Aperçu client */}
+      <div className={`rounded-xl p-3 ${dark ? "bg-zinc-700/50" : "bg-white"}`}>
+        <p
+          className={`text-[10px] uppercase tracking-wide font-bold mb-1 ${th.textSub(dark)}`}
+        >
+          Aperçu client
+        </p>
+        <div className="flex items-center gap-2">
+          <span className="text-lg">🎁</span>
+          <div>
+            <p className={`text-sm font-bold ${th.text(dark)}`}>
+              {form.label || "…"}
+            </p>
+            <p className={`text-xs ${th.textSub(dark)}`}>
+              {form.description || "…"}
+            </p>
+          </div>
+        </div>
       </div>
 
-      <div className="flex gap-2 pt-1">
+      {/* Actions */}
+      <div className="flex gap-2">
         <button
           onClick={handleSave}
-          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95"
+          className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white py-2.5 rounded-xl text-sm font-bold active:scale-95 transition-all"
         >
-          ✅ Enregistrer
+          ✅ {editId ? "Enregistrer" : "Créer l'offre"}
         </button>
         <button
-          onClick={onCancel}
-          className={`px-4 py-2.5 rounded-xl text-sm font-bold active:scale-95 ${th.btnGhost(dark)}`}
+          onClick={cancel}
+          className={`px-4 py-2.5 rounded-xl text-sm font-bold active:scale-95 border ${th.btnGhost(dark)}`}
         >
           Annuler
         </button>
       </div>
     </div>
   );
-}
-
-function OffersPanel({ dark }) {
-  const [offers, setOffers] = useState(() => OffersDB.load());
-  const [adding, setAdding] = useState(false);
-  const [editId, setEditId] = useState(null);
-
-  const refresh = () => setOffers(OffersDB.load());
-
-  const handleAdd = (data) => {
-    OffersDB.add(data);
-    refresh();
-    setAdding(false);
-  };
-
-  const handleEdit = (data) => {
-    OffersDB.update(editId, data);
-    refresh();
-    setEditId(null);
-  };
-
-  const toggle = (id, active) => {
-    OffersDB.update(id, { active });
-    refresh();
-  };
-  const remove = (id) => {
-    if (window.confirm("Supprimer cette offre ?")) {
-      OffersDB.remove(id);
-      refresh();
-    }
-  };
-
-  const now = Date.now();
-  const isExpired = (o) => o.validTo && now > o.validTo;
-  const isPending = (o) => o.validFrom && now < o.validFrom;
-
-  const describeTarget = (o) => {
-    const parts = [];
-    const t = o.target || {};
-    if (t.scope === "all") parts.push("Tous articles");
-    else if (t.scope === "pizza") {
-      const names = t.pizzaIds?.length
-        ? t.pizzaIds
-            .map((id) => PIZZAS.find((p) => p.id === id)?.name || id)
-            .join(", ")
-        : "Toutes pizzas";
-      const sizes = t.sizes?.length
-        ? t.sizes.map((s) => SIZE_LABELS[s]).join("+")
-        : "toutes tailles";
-      parts.push(`${names} · ${sizes}`);
-    } else if (t.scope === "drink") {
-      const names = t.drinkIds?.length
-        ? t.drinkIds
-            .map((id) => DRINKS.find((d) => d.id === id)?.name || id)
-            .join(", ")
-        : "Toutes boissons";
-      parts.push(names);
-    }
-    return parts.join(" · ");
-  };
-
-  const describeValue = (o) => {
-    if (o.type === "pct") return `-${o.value}%`;
-    if (o.type === "fixed") return `-${o.value.toFixed(2)}€`;
-    if (o.type === "2for1") return "2 pour 1";
-    if (o.type === "free_drink") return "Boisson offerte";
-    if (o.type === "fixed_price") return `Prix fixe ${o.value.toFixed(2)}€`;
-    return "";
-  };
 
   return (
     <div
@@ -6976,31 +7103,57 @@ function OffersPanel({ dark }) {
         <h3 className={`font-bold ${th.text(dark)}`}>
           🎁 Offres promotionnelles
         </h3>
-        {!adding && !editId && (
-          <button
-            onClick={() => setAdding(true)}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-2 rounded-xl active:scale-95"
-          >
-            + Créer une offre
-          </button>
-        )}
+        <div className="flex items-center gap-2">
+          {saved && (
+            <span className="text-xs text-emerald-500 font-bold animate-pulse">
+              ✅ Sauvé
+            </span>
+          )}
+          {error && (
+            <span className="text-xs text-red-500 font-bold">⚠️ {error}</span>
+          )}
+        </div>
       </div>
 
-      {adding && (
-        <div className="mb-4">
-          <p className={`text-sm font-bold mb-3 ${th.text(dark)}`}>
-            Nouvelle offre
+      {/* Choisir un template ou afficher le formulaire */}
+      {!creating && !editId && (
+        <>
+          <p className={`text-xs mb-3 ${th.textSub(dark)}`}>
+            Choisis un type d'offre pour commencer :
           </p>
-          <OfferForm
-            dark={dark}
-            onSave={handleAdd}
-            onCancel={() => setAdding(false)}
-          />
-        </div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-5">
+            {OFFER_TEMPLATES.map((tpl) => (
+              <button
+                key={tpl.type}
+                onClick={() => pickTemplate(tpl)}
+                className={`p-3 rounded-2xl border-2 text-left active:scale-95 transition-all hover:shadow-md ${
+                  dark
+                    ? "border-zinc-700 hover:border-purple-500 bg-zinc-800/50"
+                    : "border-purple-100 hover:border-purple-400 bg-white"
+                }`}
+              >
+                <span className="text-2xl block mb-1">{tpl.icon}</span>
+                <p className={`text-xs font-bold ${th.text(dark)}`}>
+                  {tpl.title}
+                </p>
+                <p className={`text-[10px] mt-0.5 ${th.textSub(dark)}`}>
+                  {tpl.hint}
+                </p>
+              </button>
+            ))}
+          </div>
+        </>
       )}
 
-      {offers.length === 0 && !adding ? (
-        <p className={`text-center py-6 text-sm italic ${th.textSub(dark)}`}>
+      {(creating || editId) && template && renderForm()}
+
+      {/* Liste des offres existantes */}
+      {loading ? (
+        <p className={`text-sm text-center py-6 ${th.textSub(dark)}`}>
+          Chargement…
+        </p>
+      ) : offers.length === 0 && !creating ? (
+        <p className={`text-sm text-center py-6 italic ${th.textSub(dark)}`}>
           Aucune offre créée.
         </p>
       ) : (
@@ -7008,102 +7161,74 @@ function OffersPanel({ dark }) {
           className={`rounded-2xl border divide-y ${th.border(dark)} ${th.divider(dark)}`}
         >
           {offers.map((o) => {
-            const expired = isExpired(o);
-            const pending = isPending(o);
-            const statusLabel = !o.active
-              ? "⏸ Pausée"
-              : expired
-                ? "❌ Expirée"
-                : pending
-                  ? "⏳ À venir"
-                  : "✅ Active";
-            const statusColor = !o.active
-              ? "text-zinc-400"
-              : expired
-                ? "text-red-500"
-                : pending
-                  ? "text-amber-500"
-                  : "text-emerald-500";
-
-            if (editId === o.id) {
-              return (
-                <div key={o.id} className="p-4">
-                  <OfferForm
-                    dark={dark}
-                    initial={{
-                      label: o.label,
-                      type: o.type,
-                      value: String(o.value || ""),
-                      scope: o.target?.scope || "all",
-                      pizzaIds: o.target?.pizzaIds || [],
-                      sizes: o.target?.sizes || [],
-                      drinkIds: o.target?.drinkIds || [],
-                      validFrom: o.validFrom
-                        ? new Date(o.validFrom).toISOString().slice(0, 16)
-                        : "",
-                      validTo: o.validTo
-                        ? new Date(o.validTo).toISOString().slice(0, 16)
-                        : "",
-                      maxUses: o.maxUses ? String(o.maxUses) : "",
-                    }}
-                    onSave={handleEdit}
-                    onCancel={() => setEditId(null)}
-                  />
-                </div>
-              );
-            }
+            const st = statusOf(o);
+            if (editId === o.id) return null; // form affiché au-dessus
 
             return (
-              <div key={o.id} className="px-4 py-3">
-                <div className="flex items-start justify-between gap-2 mb-1">
+              <div
+                key={o.id}
+                className={`px-4 py-3 ${!o.active ? "opacity-50" : ""}`}
+              >
+                <div className="flex items-start gap-3">
+                  <span className="text-xl mt-0.5">
+                    {OFFER_TEMPLATES.find((t) => t.type === o.type)?.icon ||
+                      "🎁"}
+                  </span>
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
                       <p className={`font-bold text-sm ${th.text(dark)}`}>
                         {o.label}
                       </p>
                       <span
-                        className={`text-xs font-bold px-2 py-0.5 rounded-full border ${o.active && !expired && !pending ? "bg-emerald-500/10 border-emerald-500/30" : "border-zinc-500/20"} ${statusColor}`}
+                        className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
+                          o.active && !isExpired(o) && !isPending(o)
+                            ? "bg-emerald-500/10 border-emerald-500/30"
+                            : "border-zinc-500/20"
+                        } ${st.color}`}
                       >
-                        {statusLabel}
+                        {st.label}
                       </span>
-                      <span className="text-xs bg-blue-600 text-white font-bold px-2 py-0.5 rounded-full">
-                        {describeValue(o)}
+                      <span className="text-xs bg-purple-600 text-white font-bold px-2 py-0.5 rounded-full">
+                        {badgeValue(o)}
                       </span>
                     </div>
-                    <p className={`text-xs mt-1 ${th.textSub(dark)}`}>
-                      {describeTarget(o)}
-                    </p>
+                    {o.description && (
+                      <p className={`text-xs mt-1 ${th.textSub(dark)}`}>
+                        {o.description}
+                      </p>
+                    )}
                     <p className={`text-[11px] mt-0.5 ${th.textSub(dark)}`}>
-                      {o.validFrom
-                        ? `Du ${new Date(o.validFrom).toLocaleDateString("fr-FR")}`
+                      {o.valid_from
+                        ? `Du ${new Date(o.valid_from).toLocaleDateString("fr-FR")}`
                         : "Dès maintenant"}
-                      {o.validTo
-                        ? ` au ${new Date(o.validTo).toLocaleDateString("fr-FR")}`
+                      {o.valid_to
+                        ? ` au ${new Date(o.valid_to).toLocaleDateString("fr-FR")}`
                         : " · Sans limite"}
-                      {o.maxUses
-                        ? ` · Max ${o.maxUses} usages (${o.usedCount || 0} utilisés)`
-                        : ""}
                     </p>
                   </div>
                 </div>
-                <div className="flex gap-1.5 mt-2 flex-wrap">
+                <div className="flex gap-1.5 mt-2 ml-8">
                   <button
-                    onClick={() => toggle(o.id, !o.active)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${o.active ? "border-amber-400/40 text-amber-500 hover:bg-amber-50" : "bg-emerald-600 text-white border-emerald-600"}`}
+                    onClick={() => toggleOffer(o.id, !o.active)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${
+                      o.active
+                        ? "border-amber-400/40 text-amber-500"
+                        : "bg-emerald-600 text-white border-emerald-600"
+                    }`}
                   >
                     {o.active ? "⏸ Pauser" : "▶ Activer"}
                   </button>
                   <button
-                    onClick={() => setEditId(o.id)}
+                    onClick={() => startEdit(o)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-bold border-2 active:scale-95 ${th.btnGhost(dark)}`}
                   >
                     ✏️ Modifier
                   </button>
                   <button
-                    onClick={() => remove(o.id)}
-                    className="px-3 py-1.5 rounded-lg text-xs font-bold border-2 border-red-400/40 text-red-500 hover:bg-red-50 active:scale-95"
+                    onClick={() => removeOffer(o.id)}
+                    className="px-3 py-1.5 rounded-lg text-xs font-bold border-2 border-red-400/40 text-red-500 active:scale-95"
                   >
-                    🗑️ Supprimer
+                    🗑️
                   </button>
                 </div>
               </div>
@@ -7113,8 +7238,8 @@ function OffersPanel({ dark }) {
       )}
 
       <p className={`text-xs mt-3 ${th.textSub(dark)}`}>
-        💡 Les offres automatiques s'appliquent au panier sans code. Coexistent
-        avec les codes promo clients.
+        🎁 Les offres s'appliquent automatiquement au panier. Le client voit un
+        popup à l'ouverture + un rappel dans son panier.
       </p>
     </div>
   );
@@ -7131,7 +7256,12 @@ const SIZE_DEFS = [
   { key: "large", label: "Ø33 · Grande" },
 ];
 
-function MenuManagementPanel({ dark, onMenuChange }) {
+function MenuManagementPanel({
+  dark,
+  onMenuChange,
+  siteConfig,
+  saveSiteConfig,
+}) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -7145,13 +7275,10 @@ function MenuManagementPanel({ dark, onMenuChange }) {
   const [bestSeller, setBestSeller] = useState(null);
   const fileRef = useRef(null);
 
-  // Tarifs globaux (supplément extra + livraison sans pizza)
-  const [globalPrices, setGlobalPrices] = useState(() => PricesDB.load());
+  // Tarifs globaux depuis site_config Supabase
   const [globalSaved, setGlobalSaved] = useState(false);
-  const saveGlobal = (patch) => {
-    const next = { ...globalPrices, ...patch };
-    PricesDB.save(next);
-    setGlobalPrices(next);
+  const saveGlobal = async (key, val) => {
+    if (saveSiteConfig) await saveSiteConfig(key, val);
     setGlobalSaved(true);
     setTimeout(() => setGlobalSaved(false), 2500);
   };
@@ -7468,10 +7595,16 @@ function MenuManagementPanel({ dark, onMenuChange }) {
               ([sizeKey, sizePrice]) => {
                 const label =
                   SIZE_DEFS.find((s) => s.key === sizeKey)?.label || sizeKey;
+                const hasPromo =
+                  editForm.promo_prices &&
+                  editForm.promo_prices[sizeKey] != null;
                 return (
-                  <div key={sizeKey} className="flex items-center gap-2">
+                  <div
+                    key={sizeKey}
+                    className={`flex items-center gap-2 flex-wrap ${hasPromo ? `rounded-lg p-2 -mx-1 ${dark ? "bg-amber-900/20" : "bg-amber-50"}` : ""}`}
+                  >
                     <span
-                      className={`text-xs font-semibold w-28 ${th.text(dark)}`}
+                      className={`text-xs font-semibold w-24 ${th.text(dark)}`}
                     >
                       {label}
                     </span>
@@ -7484,10 +7617,61 @@ function MenuManagementPanel({ dark, onMenuChange }) {
                       onChange={(e) => fp(sizeKey, e.target.value)}
                     />
                     <span className={`text-xs ${th.textSub(dark)}`}>€</span>
+
+                    {/* Toggle promo */}
+                    <label
+                      className={`flex items-center gap-1 text-[10px] font-bold ml-2 cursor-pointer ${hasPromo ? "text-amber-600" : th.textSub(dark)}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={hasPromo}
+                        className="accent-amber-500 w-3.5 h-3.5"
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            f("promo_prices", {
+                              ...(editForm.promo_prices || {}),
+                              [sizeKey]: sizePrice,
+                            });
+                          } else {
+                            const next = { ...(editForm.promo_prices || {}) };
+                            delete next[sizeKey];
+                            f(
+                              "promo_prices",
+                              Object.keys(next).length ? next : null,
+                            );
+                          }
+                        }}
+                      />
+                      Promo
+                    </label>
+
+                    {hasPromo && (
+                      <>
+                        <input
+                          className={`${smallInput} border-amber-400`}
+                          type="number"
+                          min="0"
+                          step="0.1"
+                          value={editForm.promo_prices[sizeKey]}
+                          onChange={(e) =>
+                            f("promo_prices", {
+                              ...(editForm.promo_prices || {}),
+                              [sizeKey]: parseFloat(e.target.value) || 0,
+                            })
+                          }
+                        />
+                        <span
+                          className={`text-[10px] font-bold text-amber-600`}
+                        >
+                          € promo
+                        </span>
+                      </>
+                    )}
+
                     <button
                       onClick={() => removeSize(sizeKey)}
                       title="Retirer cette taille"
-                      className="text-red-400 hover:text-red-600 text-xs ml-1"
+                      className="text-red-400 hover:text-red-600 text-xs ml-auto"
                     >
                       ✕
                     </button>
@@ -7623,9 +7807,9 @@ function MenuManagementPanel({ dark, onMenuChange }) {
               min="0"
               step="0.1"
               className={`w-16 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
-              value={globalPrices.extras ?? 2}
+              value={siteConfig?.extra_price ?? 2}
               onChange={(e) =>
-                saveGlobal({ extras: parseFloat(e.target.value) || 0 })
+                saveGlobal("extra_price", parseFloat(e.target.value) || 0)
               }
             />
             <span className={`text-xs ${th.textSub(dark)}`}>€</span>
@@ -7639,9 +7823,12 @@ function MenuManagementPanel({ dark, onMenuChange }) {
               min="0"
               step="0.1"
               className={`w-16 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
-              value={globalPrices.delivery ?? 2}
+              value={siteConfig?.delivery_fee_no_pizza ?? 2}
               onChange={(e) =>
-                saveGlobal({ delivery: parseFloat(e.target.value) || 0 })
+                saveGlobal(
+                  "delivery_fee_no_pizza",
+                  parseFloat(e.target.value) || 0,
+                )
               }
             />
             <span className={`text-xs ${th.textSub(dark)}`}>€</span>
@@ -7822,7 +8009,17 @@ function MenuManagementPanel({ dark, onMenuChange }) {
    ADMIN VIEW - Dashboard
 ═══════════════════════════════════════════════════ */
 
-function AdminView({ onBack, dark, user, onMenuChange }) {
+function AdminView({
+  onBack,
+  dark,
+  user,
+  onMenuChange,
+  onOffersChange,
+  siteConfig,
+  saveSiteConfig,
+  pizzaSizes,
+  reloadSizes,
+}) {
   const statusColor = {
     "En livraison": "bg-blue-500",
     Prête: "bg-emerald-500",
@@ -7942,8 +8139,13 @@ function AdminView({ onBack, dark, user, onMenuChange }) {
         </span>
       </div>
       <AccessManager dark={dark} />
-      <MenuManagementPanel dark={dark} onMenuChange={onMenuChange} />
-      <OffersPanel dark={dark} />
+      <MenuManagementPanel
+        dark={dark}
+        onMenuChange={onMenuChange}
+        siteConfig={siteConfig}
+        saveSiteConfig={saveSiteConfig}
+      />
+      <OffersPanel dark={dark} onOffersChange={onOffersChange} />
       <InventoryPanel dark={dark} />
       <IncidentsPanel dark={dark} user={user} />
       <OrdersOverviewPanel dark={dark} />
@@ -9602,7 +9804,7 @@ const LEGAL_CONTENT = {
       },
       {
         heading: "6. Paiement",
-        body: "Le paiement peut s'effectuer en espèces, par carte bancaire (si disponible) ou via les moyens de paiement proposés sur le site. Le paiement est exigible immédiatement à la commande ou à la livraison selon le mode choisi.",
+        body: "Le paiement peut s'effectuer par carte bancaire, WERO®, titre-restaurant ou via les moyens de paiement proposés sur le site. Le paiement est exigible immédiatement à la commande ou à la livraison selon le mode choisi.",
       },
       {
         heading: "7. Livraison",
@@ -9955,12 +10157,373 @@ function Footer({
 }
 
 /* ═══════════════════════════════════════════════════
+   ACCOUNT VIEW - paramètres, historique, suppression
+═══════════════════════════════════════════════════ */
+
+const ORDER_STATUS_LABEL = {
+  new: "📥 Reçue",
+  preparing: "👨‍🍳 En préparation",
+  ready: "✅ Prête",
+  picked_up: "📦 Prise en charge",
+  delivering: "🛵 En livraison",
+  delivered: "🎉 Livrée",
+  returned: "↩️ Retournée",
+  cancelled: "❌ Annulée",
+};
+
+function AccountView({ user, dark, onBack, onLogout }) {
+  const [tab, setTab] = useState("history"); // history | profile | delete
+  const [orders, setOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [profileForm, setProfileForm] = useState({ name: user?.name || "" });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [saveErr, setSaveErr] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleting, setDeleting] = useState(false);
+
+  // Charger historique via email (clé fiable Supabase Auth)
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const data = await getOrdersByEmail(user?.email);
+        setOrders(data);
+      } catch {
+        setOrders([]);
+      }
+      setLoading(false);
+    })();
+  }, [user?.email]);
+
+  const handleSaveProfile = async () => {
+    if (saving) return;
+    setSaving(true);
+    setSaveErr("");
+    try {
+      await updateUserProfile({ name: profileForm.name.trim() });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch (err) {
+      setSaveErr(err.message || "Erreur lors de la sauvegarde");
+    }
+    setSaving(false);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (deleteConfirm !== "SUPPRIMER" || deleting) return;
+    setDeleting(true);
+    try {
+      const { error } = await supabase.rpc("delete_own_account");
+      if (error) throw error;
+      onLogout();
+    } catch (err) {
+      alert("Erreur : " + (err.message || err));
+      setDeleting(false);
+    }
+  };
+
+  const tabCls = (id) =>
+    `text-xs font-bold px-4 py-2 rounded-xl transition-all ${
+      tab === id ? "bg-emerald-600 text-white" : `border ${th.btnGhost(dark)}`
+    }`;
+
+  return (
+    <div className="max-w-2xl mx-auto px-4 pb-32 pt-6">
+      <div className="flex items-center gap-3 mb-6">
+        <button
+          onClick={onBack}
+          className={`w-10 h-10 rounded-xl border flex items-center justify-center active:scale-95 ${th.btnGhost(dark)}`}
+        >
+          ←
+        </button>
+        <h2 className={`text-2xl font-bold ${th.text(dark)}`}>⚙️ Mon compte</h2>
+      </div>
+
+      {/* Carte profil */}
+      <div
+        className={`rounded-2xl border p-4 mb-5 flex items-center gap-4 ${th.card(dark)}`}
+      >
+        <div
+          className={`w-12 h-12 rounded-2xl flex items-center justify-center text-2xl ${dark ? "bg-zinc-800" : "bg-emerald-50"}`}
+        >
+          👤
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className={`font-bold truncate ${th.text(dark)}`}>
+            {user?.name || "Client"}
+          </p>
+          <p className={`text-sm truncate ${th.textSub(dark)}`}>
+            {user?.email}
+          </p>
+        </div>
+        <button
+          onClick={onLogout}
+          className={`shrink-0 text-xs font-semibold px-3 py-2 rounded-xl border active:scale-95 transition-all ${dark ? "border-red-900 text-red-400 hover:bg-red-950/50" : "border-red-200 text-red-500 hover:bg-red-50"}`}
+        >
+          🚪 Déco
+        </button>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-2 mb-5">
+        <button onClick={() => setTab("history")} className={tabCls("history")}>
+          📦 Commandes
+        </button>
+        <button onClick={() => setTab("profile")} className={tabCls("profile")}>
+          ✏️ Coordonnées
+        </button>
+        <button onClick={() => setTab("delete")} className={tabCls("delete")}>
+          🗑️ Supprimer
+        </button>
+      </div>
+
+      {/* ── Historique ── */}
+      {tab === "history" && (
+        <div>
+          {loading ? (
+            <p className={`text-center py-10 ${th.textSub(dark)}`}>
+              ⏳ Chargement…
+            </p>
+          ) : orders.length === 0 ? (
+            <div
+              className={`rounded-2xl border p-8 text-center ${th.card(dark)}`}
+            >
+              <p className="text-3xl mb-3">🍕</p>
+              <p className={`font-semibold ${th.text(dark)}`}>
+                Aucune commande pour l'instant
+              </p>
+              <p className={`text-sm mt-1 ${th.textSub(dark)}`}>
+                Vos futures commandes apparaîtront ici
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {orders.map((o, idx) => {
+                const statusLabel = ORDER_STATUS_LABEL[o.status] || o.status;
+                const isDelivered = o.status === "delivered";
+                const isCancelled = o.status === "cancelled";
+                const pizzas = o.items.filter((i) => i.type === "pizza");
+                const drinks = o.items.filter((i) => i.type === "drink");
+                return (
+                  <div
+                    key={o.number || idx}
+                    className={`rounded-2xl border p-4 ${th.card(dark)}`}
+                  >
+                    {/* En-tête */}
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div>
+                        <p
+                          className={`text-xs font-bold uppercase tracking-wide ${th.textSub(dark)}`}
+                        >
+                          N° {o.number}
+                        </p>
+                        <p className={`text-xs mt-0.5 ${th.textSub(dark)}`}>
+                          {o.createdAt
+                            ? new Date(o.createdAt).toLocaleDateString(
+                                "fr-FR",
+                                {
+                                  day: "numeric",
+                                  month: "short",
+                                  year: "numeric",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                },
+                              )
+                            : "-"}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${
+                          isDelivered
+                            ? dark
+                              ? "bg-emerald-900 text-emerald-300"
+                              : "bg-emerald-100 text-emerald-700"
+                            : isCancelled
+                              ? dark
+                                ? "bg-red-900 text-red-300"
+                                : "bg-red-100 text-red-600"
+                              : dark
+                                ? "bg-amber-900 text-amber-300"
+                                : "bg-amber-100 text-amber-700"
+                        }`}
+                      >
+                        {statusLabel}
+                      </span>
+                    </div>
+
+                    {/* Contenu panier */}
+                    <div
+                      className={`space-y-1 text-sm mb-3 ${th.textSub(dark)}`}
+                    >
+                      {pizzas.map((it, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span>🍕</span>
+                          <span className="flex-1 truncate">
+                            {it.name}
+                            {it.size === "large"
+                              ? " Ø33"
+                              : it.size === "medium"
+                                ? " Ø29"
+                                : it.size === "small"
+                                  ? " Ø26"
+                                  : ""}
+                            {it.crust && it.crust !== "classique"
+                              ? ` · pâte ${it.crust}`
+                              : ""}
+                          </span>
+                          <span
+                            className={`font-semibold shrink-0 ${th.text(dark)}`}
+                          >
+                            {it.price ? `${Number(it.price).toFixed(2)}€` : ""}
+                          </span>
+                        </div>
+                      ))}
+                      {drinks.map((it, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span>🥤</span>
+                          <span className="flex-1 truncate">{it.name}</span>
+                          <span
+                            className={`font-semibold shrink-0 ${th.text(dark)}`}
+                          >
+                            {it.free
+                              ? "offert"
+                              : it.price
+                                ? `${Number(it.price).toFixed(2)}€`
+                                : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Total + type */}
+                    <div
+                      className={`flex items-center justify-between border-t pt-3 ${th.border(dark)}`}
+                    >
+                      <span className={`text-xs ${th.textSub(dark)}`}>
+                        {o.orderType === "delivery"
+                          ? "🛵 Livraison"
+                          : "🏪 À emporter"}
+                      </span>
+                      <span className={`font-black ${th.text(dark)}`}>
+                        {o.total.toFixed(2)} €
+                      </span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Coordonnées ── */}
+      {tab === "profile" && (
+        <div className={`rounded-2xl border p-5 ${th.card(dark)}`}>
+          <div className="space-y-4">
+            <div>
+              <label
+                className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+              >
+                Nom affiché
+              </label>
+              <input
+                className={`w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none ${th.input(dark)}`}
+                value={profileForm.name}
+                onChange={(e) => setProfileForm({ name: e.target.value })}
+                style={{ fontSize: "16px" }}
+              />
+            </div>
+            <div>
+              <label
+                className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+              >
+                Email
+              </label>
+              <input
+                className={`w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none opacity-60 ${th.input(dark)}`}
+                value={user?.email || ""}
+                disabled
+                style={{ fontSize: "16px" }}
+              />
+              <p className={`text-[10px] mt-1 ${th.textSub(dark)}`}>
+                L'email ne peut pas être modifié ici.
+              </p>
+            </div>
+            {saveErr && <p className="text-xs text-red-500">{saveErr}</p>}
+            {saved && (
+              <p className="text-xs text-emerald-500 font-bold">
+                ✅ Nom mis à jour
+              </p>
+            )}
+            <button
+              disabled={saving}
+              onClick={handleSaveProfile}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl active:scale-95 transition-all disabled:opacity-50"
+            >
+              {saving ? "⏳ Enregistrement…" : "✅ Enregistrer"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Suppression ── */}
+      {tab === "delete" && (
+        <div
+          className={`rounded-2xl border p-5 ${
+            dark ? "bg-red-950/30 border-red-900" : "bg-red-50 border-red-200"
+          }`}
+        >
+          <h4
+            className={`font-bold mb-2 ${dark ? "text-red-400" : "text-red-700"}`}
+          >
+            ⚠️ Supprimer mon compte
+          </h4>
+          <p
+            className={`text-sm mb-4 ${dark ? "text-red-300" : "text-red-600"}`}
+          >
+            Action irréversible. Ton compte et toutes tes données seront
+            définitivement supprimés.
+          </p>
+          <div className="space-y-3">
+            <div>
+              <label
+                className={`text-xs font-semibold block mb-1 ${
+                  dark ? "text-red-300" : "text-red-600"
+                }`}
+              >
+                Tape <strong>SUPPRIMER</strong> pour confirmer
+              </label>
+              <input
+                className={`w-full border-2 rounded-xl px-3 py-2.5 text-sm outline-none border-red-300 ${th.input(dark)}`}
+                value={deleteConfirm}
+                onChange={(e) => setDeleteConfirm(e.target.value)}
+                placeholder="SUPPRIMER"
+                style={{ fontSize: "16px" }}
+              />
+            </div>
+            <button
+              onClick={handleDeleteAccount}
+              disabled={deleteConfirm !== "SUPPRIMER" || deleting}
+              className="bg-red-600 hover:bg-red-700 text-white text-sm font-bold px-5 py-2.5 rounded-xl active:scale-95 transition-all disabled:opacity-30"
+            >
+              {deleting
+                ? "⏳ Suppression…"
+                : "🗑️ Supprimer définitivement mon compte"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
    OFFERS POPUP - affiché à l'ouverture du site si offre active
 ═══════════════════════════════════════════════════ */
 
-function OffersPopup({ dark, onClose }) {
-  const offers = OffersDB.active();
-  if (offers.length === 0) return null;
+function OffersPopup({ dark, onClose, offers }) {
+  if (!offers || offers.length === 0) return null;
 
   return (
     <div
@@ -10030,9 +10593,8 @@ function OffersPopup({ dark, onClose }) {
 }
 
 // Petit bandeau affiché dans le panier quand une offre est active
-function OffersCartBanner({ dark }) {
-  const offers = OffersDB.active();
-  if (offers.length === 0) return null;
+function OffersCartBanner({ dark, offers }) {
+  if (!offers || offers.length === 0) return null;
 
   return (
     <div
@@ -10073,6 +10635,7 @@ export default function HousePizza() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [showAuth, setShowAuth] = useState(false);
   const [user, setUser] = useState(null);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
   const [orderData, setOrderData] = useState(null);
   const [legalPage, setLegalPage] = useState(null);
   const [showOffersPopup, setShowOffersPopup] = useState(false);
@@ -10083,18 +10646,20 @@ export default function HousePizza() {
     bestSellerName,
     reloadMenu,
   } = useMenuData();
+  const { allOffers, activeOffers, reloadOffers } = useOffers();
+  const { config: siteConfig, saveConfig: saveSiteConfig } = useSiteConfig();
+  const { sizes: pizzaSizes, activeSizes, reloadSizes } = usePizzaSizes();
 
   // Popup offres : afficher 1 fois par session si offre active
   useEffect(() => {
-    const active = OffersDB.active();
-    if (active.length > 0 && !sessionStorage.getItem("hp_offers_seen")) {
+    if (activeOffers.length > 0 && !sessionStorage.getItem("hp_offers_seen")) {
       const timer = setTimeout(() => {
         setShowOffersPopup(true);
         sessionStorage.setItem("hp_offers_seen", "1");
       }, 800);
       return () => clearTimeout(timer);
     }
-  }, []);
+  }, [activeOffers]);
 
   // ── Auth Supabase : chargement session au démarrage ──
   useEffect(() => {
@@ -10140,27 +10705,26 @@ export default function HousePizza() {
     // ── Application des offres automatiques ──
     let offerDiscount = 0;
     let offerLabel = "";
-    const activeOffers = OffersDB.active();
 
     for (const offer of activeOffers) {
-      const t = offer.target || {};
+      const cond = offer.conditions || {};
       const matchesPizza = (item) => {
         if (item.type !== "pizza") return false;
         if (
-          t.pizzaIds?.length &&
-          !t.pizzaIds.includes(
+          cond.pizzaIds?.length &&
+          !cond.pizzaIds.includes(
             MENU_PIZZAS.find((p) => p.name === item.name)?.id,
           )
         )
           return false;
-        if (t.sizes?.length && !t.sizes.includes(item.size)) return false;
+        if (cond.sizes?.length && !cond.sizes.includes(item.size)) return false;
         return true;
       };
       const matchesDrink = (item) => {
         if (item.type !== "drink") return false;
         if (
-          t.drinkIds?.length &&
-          !t.drinkIds.includes(
+          cond.drinkIds?.length &&
+          !cond.drinkIds.includes(
             MENU_DRINKS.find((d) => d.name === item.name)?.id,
           )
         )
@@ -10168,9 +10732,9 @@ export default function HousePizza() {
         return true;
       };
       const matchesItem = (item) => {
-        if (t.scope === "all") return true;
-        if (t.scope === "pizza") return matchesPizza(item);
-        if (t.scope === "drink") return matchesDrink(item);
+        if (offer.scope === "all") return true;
+        if (offer.scope === "pizza") return matchesPizza(item);
+        if (offer.scope === "drink") return matchesDrink(item);
         return false;
       };
       const targeted = cart.filter(matchesItem);
@@ -10201,8 +10765,9 @@ export default function HousePizza() {
           const drinks = cart.filter(
             (i) =>
               i.type === "drink" &&
-              (t.drinkIds?.length === 0 ||
-                t.drinkIds?.includes(
+              (cond.drinkIds?.length === 0 ||
+                !cond.drinkIds?.length ||
+                cond.drinkIds?.includes(
                   MENU_DRINKS.find((d) => d.name === i.name)?.id,
                 )),
           );
@@ -10227,7 +10792,9 @@ export default function HousePizza() {
     offerDiscount = Math.min(offerDiscount, totalRaw); // plafond
 
     const deliveryFee =
-      cart.length > 0 && !hasPizza ? PricesDB.deliveryFee() : DELIVERY_FEE;
+      cart.length > 0 && !hasPizza
+        ? (siteConfig?.delivery_fee_no_pizza ?? 2)
+        : (siteConfig?.delivery_fee ?? DELIVERY_FEE);
     const total = Math.max(0, totalRaw - offerDiscount + deliveryFee);
     const canCheckout = totalRaw >= MIN_ORDER_AMOUNT;
     const missingForMin = Math.max(0, MIN_ORDER_AMOUNT - totalRaw);
@@ -10242,7 +10809,7 @@ export default function HousePizza() {
       canCheckout,
       missingForMin,
     };
-  }, [cart]); // ← cette ligne DOIT être présente
+  }, [cart, activeOffers]); // ← recalcule si panier OU offres changent
 
   const addPizza = useCallback(
     (pizza, size, crust, extras, price) => {
@@ -10337,6 +10904,7 @@ export default function HousePizza() {
     try {
       await signOut();
     } catch {}
+    setCart([]);
     showToast("Déconnecté", "info");
   };
 
@@ -10382,6 +10950,7 @@ export default function HousePizza() {
           pizza={selectedPizza}
           onClose={() => setSelectedPizza(null)}
           onAdd={addPizza}
+          siteConfig={siteConfig}
         />
       )}
       {drinkUpsell && (
@@ -10460,17 +11029,61 @@ export default function HousePizza() {
 
           <div className="flex items-center gap-2">
             {user ? (
-              <button
-                onClick={handleLogout}
-                className={`text-sm font-semibold px-3 py-2 rounded-xl border active:scale-95 transition-all flex items-center gap-1.5
-                  ${dark ? "bg-zinc-800 border-zinc-700 text-zinc-200" : "bg-gray-100 border-gray-200 text-gray-700"}`}
-              >
-                <span>👤</span>
-                <span className="hidden sm:inline">
-                  {user.name.split(" ")[0]}
-                </span>
-                <span className={`text-xs ${th.textSub(dark)}`}>· Déco</span>
-              </button>
+              <div className="relative">
+                <button
+                  onClick={() => setUserMenuOpen((p) => !p)}
+                  className={`text-sm font-semibold px-3 py-2 rounded-xl border active:scale-95 transition-all flex items-center gap-1.5
+                    ${dark ? "bg-zinc-800 border-zinc-700 text-zinc-200" : "bg-gray-100 border-gray-200 text-gray-700"}`}
+                >
+                  <span>👤</span>
+                  <span className="hidden sm:inline">
+                    {user.name?.split(" ")[0] || "Compte"}
+                  </span>
+                  <span className={`text-xs ${th.textSub(dark)}`}>▾</span>
+                </button>
+
+                {userMenuOpen && (
+                  <>
+                    <div
+                      className="fixed inset-0 z-[60]"
+                      onClick={() => setUserMenuOpen(false)}
+                    />
+                    <div
+                      className={`absolute right-0 top-full mt-2 w-56 rounded-2xl shadow-2xl border z-[61] overflow-hidden ${dark ? "bg-zinc-900 border-zinc-700" : "bg-white border-gray-200"}`}
+                      style={{ animation: "toastIn 0.2s ease" }}
+                    >
+                      <div className={`px-4 py-3 border-b ${th.border(dark)}`}>
+                        <p
+                          className={`text-sm font-bold truncate ${th.text(dark)}`}
+                        >
+                          {user.name || user.email}
+                        </p>
+                        <p className={`text-xs truncate ${th.textSub(dark)}`}>
+                          {user.email}
+                        </p>
+                      </div>
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          setStep("account");
+                        }}
+                        className={`w-full text-left px-4 py-3 text-sm flex items-center gap-3 transition-colors ${dark ? "hover:bg-zinc-800 text-zinc-200" : "hover:bg-gray-50 text-gray-700"}`}
+                      >
+                        <span>⚙️</span> Paramètres du compte
+                      </button>
+                      <button
+                        onClick={() => {
+                          setUserMenuOpen(false);
+                          handleLogout();
+                        }}
+                        className={`w-full text-left px-4 py-3 text-sm flex items-center gap-3 border-t transition-colors ${dark ? "hover:bg-zinc-800 text-red-400 border-zinc-800" : "hover:bg-red-50 text-red-500 border-gray-100"}`}
+                      >
+                        <span>🚪</span> Déconnexion
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             ) : (
               <button
                 onClick={() => setShowAuth(true)}
@@ -10579,6 +11192,7 @@ export default function HousePizza() {
                 pizza={pizza}
                 onSelect={setSelectedPizza}
                 dark={dark}
+                activeOffers={activeOffers}
               />
             ))}
           </div>
@@ -10811,6 +11425,19 @@ export default function HousePizza() {
           onBack={() => setStep("menu")}
           onCheckout={handleCheckout}
           onClearRequest={() => setConfirmClear(true)}
+          activeOffers={activeOffers}
+        />
+      )}
+
+      {step === "account" && (
+        <AccountView
+          user={user}
+          dark={dark}
+          onBack={() => setStep("menu")}
+          onLogout={() => {
+            handleLogout();
+            setStep("menu");
+          }}
         />
       )}
 
@@ -10877,6 +11504,11 @@ export default function HousePizza() {
           onBack={() => setStep("menu")}
           user={user}
           onMenuChange={reloadMenu}
+          onOffersChange={reloadOffers}
+          siteConfig={siteConfig}
+          saveSiteConfig={saveSiteConfig}
+          pizzaSizes={pizzaSizes}
+          reloadSizes={reloadSizes}
         />
       )}
 
@@ -10931,7 +11563,11 @@ export default function HousePizza() {
 
       {/* Popup offres à l'ouverture */}
       {showOffersPopup && (
-        <OffersPopup dark={dark} onClose={() => setShowOffersPopup(false)} />
+        <OffersPopup
+          dark={dark}
+          onClose={() => setShowOffersPopup(false)}
+          offers={activeOffers}
+        />
       )}
     </div>
   );
