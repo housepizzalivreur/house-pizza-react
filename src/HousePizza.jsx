@@ -53,7 +53,56 @@ import {
   getIncidents,
   createIncident,
   deleteIncident,
+  getMenuItems,
+  createMenuItem,
+  updateMenuItem,
+  deleteMenuItem,
+  seedMenuItems,
+  uploadMenuImage,
+  deleteMenuImage,
+  getBestSellerPizza,
 } from "./lib/db";
+
+/* ═══════════════════════════════════════════════════
+   IMAGE_MAP - clé string → import local
+   Utilisé pour résoudre l'image depuis la DB
+═══════════════════════════════════════════════════ */
+
+const IMAGE_MAP = {
+  // Pizzas
+  margarita: margaritaImg,
+  orientale: orientaleImg,
+  mexicaine: mexicaineImg,
+  vegetarienne: vegetarienneImg,
+  catalane: catalaneImg,
+  hawaienne: hawaienneImg,
+  bolognaise: bolognaiseImg,
+  carnivore: carnivoreImg,
+  roquefort: roquefortImg,
+  mozzarella: mozzarellaImg,
+  bouchon: bouchonImg,
+  "chevre-miel": chevreMielImg,
+  thon: thonImg,
+  oceane: oceaneImg,
+  kebab: kebabImg,
+  saumon: saumonImg,
+  benara: benaraImg,
+  "4fromages": quatreFromagesImg,
+  "4saisons": quatreSaisonsImg,
+  exotique: exotiqueImg,
+  // Boissons
+  coca33: cocaCola33Img,
+  oasistropical33: oasisTropical33Img,
+  oasispeche33: oasisPeche33Img,
+  caribia: caribiaImg,
+  orangina33: orangina33Img,
+  schweppesagrumes33: schweppes33Img,
+  coca15: cocaCola15Img,
+  fanta15: fanta15Img,
+  orangina15: orangina15Img,
+  coca2: cocaCola2Img,
+  stoneyginger2l: stoneyGinger2lImg,
+};
 
 /* ═══════════════════════════════════════════════════
    DATA
@@ -443,6 +492,122 @@ const DRINKS = [
 const DELIVERY_FEE = 0;
 const NO_PIZZA_DELIVERY_FEE = 2;
 const MIN_ORDER_AMOUNT = 5;
+
+/* ═══════════════════════════════════════════════════
+   SEED & MENU LOADING - DB ↔ hardcoded fallback
+═══════════════════════════════════════════════════ */
+
+// Construit les rows DB à partir des tableaux hardcodés
+function buildSeedRows() {
+  const rows = [];
+  PIZZAS.forEach((p, i) => {
+    const imageKey =
+      Object.keys(IMAGE_MAP).find((k) => IMAGE_MAP[k] === p.image) || "";
+    rows.push({
+      type: "pizza",
+      category: p.category,
+      name: p.name,
+      description: p.desc,
+      image_key: imageKey,
+      image_url: null,
+      prices: p.prices,
+      price: null,
+      sort_order: i,
+    });
+  });
+  DRINKS.forEach((d, i) => {
+    const imageKey =
+      Object.keys(IMAGE_MAP).find((k) => IMAGE_MAP[k] === d.image) || "";
+    rows.push({
+      type: "drink",
+      category: d.category,
+      name: d.name,
+      description: null,
+      image_key: imageKey,
+      image_url: null,
+      prices: null,
+      price: d.price,
+      sort_order: 100 + i,
+    });
+  });
+  return rows;
+}
+
+// Résout l'image : priorité URL uploadée > clé locale > null
+function resolveMenuImage(row) {
+  if (row.image_url) return row.image_url;
+  if (row.image_key && IMAGE_MAP[row.image_key])
+    return IMAGE_MAP[row.image_key];
+  return null;
+}
+
+// Hook : charge le menu depuis Supabase, seed au premier lancement, fallback hardcodé
+function useMenuData() {
+  const [pizzas, setPizzas] = useState(PIZZAS);
+  const [drinks, setDrinks] = useState(DRINKS);
+  const [bestSellerName, setBestSellerName] = useState(null);
+  const [menuLoaded, setMenuLoaded] = useState(false);
+
+  const rowToPizza = (row, bsName) => ({
+    id: row.id,
+    category: row.category,
+    name: row.name,
+    desc: row.description || "",
+    prices: row.prices || {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    bestSeller: bsName ? row.name === bsName : false,
+    image: resolveMenuImage(row),
+    active: row.active !== false,
+  });
+
+  const rowToDrink = (row) => ({
+    id: row.id,
+    category: row.category,
+    name: row.name,
+    price: row.price ?? 2,
+    image: resolveMenuImage(row),
+    active: row.active !== false,
+  });
+
+  const loadMenu = useCallback(async () => {
+    try {
+      const seedRows = buildSeedRows();
+      await seedMenuItems(seedRows);
+
+      const [rows, bsName] = await Promise.all([
+        getMenuItems(),
+        getBestSellerPizza().catch(() => null),
+      ]);
+
+      if (bsName) setBestSellerName(bsName);
+
+      if (rows.length > 0) {
+        const dbPizzas = rows
+          .filter((r) => r.type === "pizza" && r.active !== false)
+          .map((r) => rowToPizza(r, bsName));
+        const dbDrinks = rows
+          .filter((r) => r.type === "drink" && r.active !== false)
+          .map(rowToDrink);
+        if (dbPizzas.length > 0) setPizzas(dbPizzas);
+        if (dbDrinks.length > 0) setDrinks(dbDrinks);
+      }
+      setMenuLoaded(true);
+    } catch (err) {
+      console.warn("Menu DB unavailable, using hardcoded data:", err.message);
+      setMenuLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadMenu();
+  }, [loadMenu]);
+
+  return { pizzas, drinks, bestSellerName, menuLoaded, reloadMenu: loadMenu };
+}
+
 /* ═══════════════════════════════════════════════════
    ROLES - rôles gérés via Supabase user_roles
 ═══════════════════════════════════════════════════ */
@@ -454,7 +619,7 @@ const ROLE_LABELS = {
 };
 const PROTECTED_ADMIN = "housepizzayy.976@gmail.com";
 
-// RolesDB — remplacé par Supabase user_roles
+// RolesDB - remplacé par Supabase user_roles
 // Gestion des rôles via SQL Editor Supabase ou AccessManager branché sur getUserRole()
 const RolesDB = {
   list: () => [],
@@ -483,7 +648,7 @@ const REX_REASON_LABEL = (id) =>
 const isPizzeriaFault = (reasonId) =>
   !!REX_REASONS.find((r) => r.id === reasonId)?.pizzeriaFault;
 
-// RexDB — remplacé par Supabase incidents
+// RexDB - remplacé par Supabase incidents
 // Shim synchrone pour compatibilité, les données sont chargées via getIncidents()
 const RexDB = {
   _cache: [],
@@ -3458,6 +3623,9 @@ function CartView({
         <h2 className={`text-2xl font-bold ${th.text(dark)}`}>Votre panier</h2>
       </div>
 
+      {/* Bannière offres actives */}
+      <OffersCartBanner dark={dark} />
+
       <div
         className={`rounded-3xl shadow-sm border mb-4 ${th.card(dark)} ${th.divider(dark)}`}
       >
@@ -4899,7 +5067,14 @@ function OrdersOverviewPanel({ dark }) {
   const currentList = filters[tab].list;
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-indigo-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%)",
+      }}
+    >
       <div className="flex items-center justify-between mb-3">
         <h3 className={`font-bold ${th.text(dark)}`}>📊 Activité temps réel</h3>
         <span className={`text-xs ${th.textSub(dark)}`}>🔒 Lecture seule</span>
@@ -5257,7 +5432,14 @@ function ExportPanel({ dark }) {
     "px-3 py-2.5 rounded-xl text-xs font-bold text-white active:scale-95 transition-all flex items-center justify-center gap-1.5";
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-slate-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%)",
+      }}
+    >
       <h3 className={`font-bold mb-1 ${th.text(dark)}`}>
         📥 Export Excel (CSV)
       </h3>
@@ -5393,7 +5575,14 @@ function IncidentsPanel({ dark, user }) {
   };
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-rose-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #fff1f2 0%, #ffe4e6 100%)",
+      }}
+    >
       <div className="flex items-center justify-between mb-3">
         <h3 className={`font-bold ${th.text(dark)}`}>⚠️ Incidents (REX)</h3>
         <div className="flex gap-3 text-xs">
@@ -5708,7 +5897,14 @@ function AccessManager({ dark }) {
   };
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-blue-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%)",
+      }}
+    >
       <h3 className={`font-bold mb-1 ${th.text(dark)}`}>
         🔑 Gestion des accès
       </h3>
@@ -5953,7 +6149,14 @@ function InventoryPanel({ dark }) {
     "px-3 py-2 rounded-xl text-xs font-bold active:scale-95 transition-all";
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-cyan-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #ecfeff 0%, #cffafe 100%)",
+      }}
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className={`font-bold ${th.text(dark)}`}>📦 Inventaire</h3>
         <div className="flex gap-2">
@@ -6404,182 +6607,6 @@ function InventoryPanel({ dark }) {
 }
 
 /* ═══════════════════════════════════════════════════
-   PRICES PANEL - édition admin de tous les prix
-═══════════════════════════════════════════════════ */
-function PricesPanel({ dark }) {
-  const [prices, setPrices] = useState(() => PricesDB.load());
-  const [saved, setSaved] = useState(false);
-
-  const save = (next) => {
-    PricesDB.save(next);
-    setPrices(next);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  };
-
-  const setPizzaPrice = (id, size, val) => {
-    const next = {
-      ...prices,
-      pizzas: {
-        ...(prices.pizzas || {}),
-        [id]: { ...(prices.pizzas?.[id] || {}), [size]: parseFloat(val) || 0 },
-      },
-    };
-    save(next);
-  };
-  const setDrinkPrice = (id, val) => {
-    const next = {
-      ...prices,
-      drinks: { ...(prices.drinks || {}), [id]: parseFloat(val) || 0 },
-    };
-    save(next);
-  };
-  const setExtraPrice = (val) =>
-    save({ ...prices, extras: parseFloat(val) || 2 });
-  const setDeliveryFee = (val) =>
-    save({ ...prices, delivery: parseFloat(val) || 0 });
-
-  const priceInput = (value, onChange) => (
-    <input
-      type="number"
-      min="0"
-      step="0.1"
-      defaultValue={value}
-      onBlur={(e) => onChange(e.target.value)}
-      className={`w-20 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
-    />
-  );
-
-  return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className={`font-bold ${th.text(dark)}`}>💶 Gestion des prix</h3>
-        {saved && (
-          <span className="text-xs text-emerald-500 font-bold">
-            ✅ Sauvegardé
-          </span>
-        )}
-      </div>
-
-      {/* Frais globaux */}
-      <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
-        <p
-          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
-        >
-          Tarifs globaux
-        </p>
-        <div className="space-y-3">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className={`text-sm font-semibold ${th.text(dark)}`}>
-                Supplément (par extra)
-              </p>
-              <p className={`text-xs ${th.textSub(dark)}`}>
-                Mozzarella, Poulet, etc.
-              </p>
-            </div>
-            {priceInput(prices.extras ?? 2, setExtraPrice)}
-          </div>
-          <div className="flex items-center justify-between">
-            <div>
-              <p className={`text-sm font-semibold ${th.text(dark)}`}>
-                Livraison sans pizza
-              </p>
-              <p className={`text-xs ${th.textSub(dark)}`}>
-                Commande boissons uniquement
-              </p>
-            </div>
-            {priceInput(prices.delivery ?? 2, setDeliveryFee)}
-          </div>
-        </div>
-      </div>
-
-      {/* Prix pizzas */}
-      <div className={`rounded-2xl border p-4 mb-4 ${th.border(dark)}`}>
-        <p
-          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
-        >
-          Pizzas
-        </p>
-        <div className="space-y-2">
-          <div className="grid grid-cols-4 gap-2 mb-2">
-            <span
-              className={`text-[10px] font-bold ${th.textSub(dark)}`}
-            ></span>
-            {["Ø26", "Ø29", "Ø33"].map((s) => (
-              <span
-                key={s}
-                className={`text-[10px] font-bold text-center ${th.textSub(dark)}`}
-              >
-                {s}
-              </span>
-            ))}
-          </div>
-          {PIZZAS.map((p) => (
-            <div
-              key={p.id}
-              className={`grid grid-cols-4 gap-2 items-center py-1 border-t ${th.border(dark)}`}
-            >
-              <span
-                className={`text-xs font-semibold truncate ${th.text(dark)}`}
-              >
-                {p.name}
-              </span>
-              {[
-                ["small", "Ø26"],
-                ["medium", "Ø29"],
-                ["large", "Ø33"],
-              ].map(([size]) => (
-                <div key={size} className="flex justify-center">
-                  {priceInput(
-                    prices?.pizzas?.[p.id]?.[size] ?? p.prices[size],
-                    (val) => setPizzaPrice(p.id, size, val),
-                  )}
-                </div>
-              ))}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Prix boissons */}
-      <div className={`rounded-2xl border p-4 ${th.border(dark)}`}>
-        <p
-          className={`text-xs font-bold uppercase tracking-wide mb-3 ${th.textSub(dark)}`}
-        >
-          Boissons
-        </p>
-        <div className="space-y-2">
-          {DRINKS.map((d) => (
-            <div
-              key={d.id}
-              className={`flex items-center justify-between py-1.5 border-t ${th.border(dark)}`}
-            >
-              <div>
-                <p className={`text-xs font-semibold ${th.text(dark)}`}>
-                  {d.name}
-                </p>
-                <p className={`text-[10px] ${th.textSub(dark)}`}>
-                  {d.category}
-                </p>
-              </div>
-              {priceInput(prices?.drinks?.[d.id] ?? d.price, (val) =>
-                setDrinkPrice(d.id, val),
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <p className={`text-xs mt-3 ${th.textSub(dark)}`}>
-        💡 Les prix modifiés s'appliquent immédiatement au menu et au panier.
-        Les offres actives s'appliquent en plus.
-      </p>
-    </div>
-  );
-}
-
-/* ═══════════════════════════════════════════════════
    OFFERS PANEL - offres admin automatiques
 ═══════════════════════════════════════════════════ */
 const OFFER_TYPES = [
@@ -6937,7 +6964,14 @@ function OffersPanel({ dark }) {
   };
 
   return (
-    <div className={`rounded-3xl shadow-sm border p-5 mb-6 ${th.card(dark)}`}>
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-purple-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #faf5ff 0%, #f3e8ff 100%)",
+      }}
+    >
       <div className="flex items-center justify-between mb-4">
         <h3 className={`font-bold ${th.text(dark)}`}>
           🎁 Offres promotionnelles
@@ -7087,10 +7121,708 @@ function OffersPanel({ dark }) {
 }
 
 /* ═══════════════════════════════════════════════════
+   MENU MANAGEMENT PANEL - CRUD articles (pizzas + boissons)
+   Upload images, gestion tailles, gel, best seller auto
+═══════════════════════════════════════════════════ */
+
+const SIZE_DEFS = [
+  { key: "small", label: "Ø26 · Petite" },
+  { key: "medium", label: "Ø29 · Moyenne" },
+  { key: "large", label: "Ø33 · Grande" },
+];
+
+function MenuManagementPanel({ dark, onMenuChange }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [editId, setEditId] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [addMode, setAddMode] = useState(false);
+  const [tab, setTab] = useState("pizza");
+  const [error, setError] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [bestSeller, setBestSeller] = useState(null);
+  const fileRef = useRef(null);
+
+  // Tarifs globaux (supplément extra + livraison sans pizza)
+  const [globalPrices, setGlobalPrices] = useState(() => PricesDB.load());
+  const [globalSaved, setGlobalSaved] = useState(false);
+  const saveGlobal = (patch) => {
+    const next = { ...globalPrices, ...patch };
+    PricesDB.save(next);
+    setGlobalPrices(next);
+    setGlobalSaved(true);
+    setTimeout(() => setGlobalSaved(false), 2500);
+  };
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const [rows, bs] = await Promise.all([
+        getMenuItems(),
+        getBestSellerPizza().catch(() => null),
+      ]);
+      setItems(rows);
+      setBestSeller(bs);
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const filtered = items.filter((i) => i.type === tab);
+  const pizzaCats = ["Sauce tomate", "Crème fraîche"];
+  const drinkCats = ["33cl", "1.5L", "2L"];
+  const imageKeys = Object.keys(IMAGE_MAP);
+
+  const blankPizza = () => ({
+    type: "pizza",
+    category: "Sauce tomate",
+    name: "",
+    description: "",
+    image_key: "",
+    image_url: null,
+    prices: {
+      large: 14,
+      medium: PIZZA_PRICE_MEDIUM_STD,
+      small: PIZZA_PRICE_SMALL,
+    },
+    price: null,
+    active: true,
+    sort_order: items.length,
+  });
+  const blankDrink = () => ({
+    type: "drink",
+    category: "33cl",
+    name: "",
+    description: null,
+    image_key: "",
+    image_url: null,
+    prices: null,
+    price: 2,
+    active: true,
+    sort_order: items.length + 100,
+  });
+
+  const startEdit = (item) => {
+    setEditId(item.id);
+    setEditForm({ ...item, prices: item.prices ? { ...item.prices } : null });
+    setAddMode(false);
+  };
+  const startAdd = () => {
+    setEditForm(tab === "pizza" ? blankPizza() : blankDrink());
+    setEditId(null);
+    setAddMode(true);
+  };
+  const cancelEdit = () => {
+    setEditId(null);
+    setAddMode(false);
+    setError(null);
+  };
+
+  const f = (key, val) => setEditForm((prev) => ({ ...prev, [key]: val }));
+  const fp = (size, val) =>
+    setEditForm((prev) => ({
+      ...prev,
+      prices: { ...(prev.prices || {}), [size]: parseFloat(val) || 0 },
+    }));
+
+  // Supprimer une taille
+  const removeSize = (size) => {
+    setEditForm((prev) => {
+      const next = { ...(prev.prices || {}) };
+      delete next[size];
+      return { ...prev, prices: next };
+    });
+  };
+
+  // Ajouter une taille personnalisée
+  const [newSizeKey, setNewSizeKey] = useState("");
+  const addCustomSize = () => {
+    const key = newSizeKey.trim().toLowerCase().replace(/\s+/g, "_");
+    if (!key) return;
+    fp(key, 0);
+    setNewSizeKey("");
+  };
+
+  // Upload image depuis disque
+  const handleImageUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+    try {
+      const url = await uploadMenuImage(file);
+      f("image_url", url);
+      f("image_key", ""); // on vide la clé locale si on uploade
+    } catch (err) {
+      setError("Upload échoué : " + err.message);
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const saveItem = async () => {
+    if (!editForm.name?.trim()) {
+      setError("Le nom est requis");
+      return;
+    }
+    setSaving(true);
+    setError(null);
+    try {
+      if (addMode) {
+        await createMenuItem(editForm);
+      } else {
+        const { id, created_at, updated_at, ...patch } = editForm;
+        await updateMenuItem(editId, patch);
+      }
+      await load();
+      if (onMenuChange) onMenuChange();
+      setEditId(null);
+      setAddMode(false);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleActive = async (item) => {
+    try {
+      await updateMenuItem(item.id, { active: !item.active });
+      await load();
+      if (onMenuChange) onMenuChange();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const removeItem = async (item) => {
+    if (!window.confirm(`Supprimer "${item.name}" définitivement ?`)) return;
+    try {
+      if (item.image_url) await deleteMenuImage(item.image_url).catch(() => {});
+      await deleteMenuItem(item.id);
+      await load();
+      if (onMenuChange) onMenuChange();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const inputCls = `w-full border-2 rounded-xl px-3 py-2 text-sm outline-none transition-colors ${th.input(dark)}`;
+  const smallInput = `w-20 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`;
+  const chipCls = (on) =>
+    `text-xs font-bold px-3 py-1.5 rounded-full transition-all active:scale-95 ${
+      on
+        ? "bg-emerald-600 text-white"
+        : `border ${dark ? "border-zinc-600 text-zinc-400" : "border-gray-200 text-gray-500"}`
+    }`;
+
+  // ── Preview image courante ──
+  const currentImg =
+    editForm.image_url ||
+    (editForm.image_key && IMAGE_MAP[editForm.image_key]) ||
+    null;
+
+  const renderForm = () => (
+    <div
+      className={`rounded-2xl border p-4 mb-3 space-y-4 ${dark ? "bg-zinc-800/50 border-zinc-700" : "bg-amber-50/60 border-amber-200"}`}
+    >
+      {/* Nom + Catégorie */}
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Nom *
+          </label>
+          <input
+            className={inputCls}
+            value={editForm.name || ""}
+            onChange={(e) => f("name", e.target.value)}
+            placeholder="Ex: Margarita"
+          />
+        </div>
+        <div>
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Catégorie
+          </label>
+          <select
+            className={inputCls}
+            value={editForm.category || ""}
+            onChange={(e) => f("category", e.target.value)}
+          >
+            {(tab === "pizza" ? pizzaCats : drinkCats).map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {/* Description */}
+      {tab === "pizza" && (
+        <div>
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Description / ingrédients
+          </label>
+          <input
+            className={inputCls}
+            value={editForm.description || ""}
+            onChange={(e) => f("description", e.target.value)}
+            placeholder="Olives, fromage fondant…"
+          />
+        </div>
+      )}
+
+      {/* ── Image ── */}
+      <div>
+        <label
+          className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+        >
+          Image
+        </label>
+        <div className="flex items-center gap-3 flex-wrap">
+          {currentImg && (
+            <img
+              src={currentImg}
+              alt=""
+              className="w-14 h-14 object-contain rounded-xl border border-gray-200"
+            />
+          )}
+          {/* Upload depuis disque */}
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleImageUpload}
+          />
+          <button
+            onClick={() => fileRef.current?.click()}
+            disabled={uploading}
+            className={`text-xs font-bold px-4 py-2 rounded-xl border active:scale-95 transition-all ${th.btnGhost(dark)} ${uploading ? "opacity-50" : ""}`}
+          >
+            {uploading ? "⏳ Upload…" : "📁 Depuis le disque"}
+          </button>
+          {/* Ou choisir une image intégrée */}
+          <select
+            className={`text-xs border-2 rounded-xl px-2 py-2 ${th.input(dark)}`}
+            value={
+              editForm.image_url ? "__uploaded__" : editForm.image_key || ""
+            }
+            onChange={(e) => {
+              if (e.target.value === "__uploaded__") return;
+              f("image_key", e.target.value);
+              f("image_url", null);
+            }}
+          >
+            {editForm.image_url && (
+              <option value="__uploaded__">📸 Image uploadée</option>
+            )}
+            <option value="">- Intégrée -</option>
+            {imageKeys.map((k) => (
+              <option key={k} value={k}>
+                {k}
+              </option>
+            ))}
+          </select>
+          {(editForm.image_url || editForm.image_key) && (
+            <button
+              onClick={() => {
+                f("image_url", null);
+                f("image_key", "");
+              }}
+              className="text-xs text-red-500 hover:underline"
+            >
+              ✕ Retirer
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* ── Prix / Tailles ── */}
+      {tab === "pizza" ? (
+        <div>
+          <label
+            className={`text-xs font-semibold block mb-2 ${th.textSub(dark)}`}
+          >
+            Tailles & prix
+          </label>
+          <div className="space-y-2">
+            {Object.entries(editForm.prices || {}).map(
+              ([sizeKey, sizePrice]) => {
+                const label =
+                  SIZE_DEFS.find((s) => s.key === sizeKey)?.label || sizeKey;
+                return (
+                  <div key={sizeKey} className="flex items-center gap-2">
+                    <span
+                      className={`text-xs font-semibold w-28 ${th.text(dark)}`}
+                    >
+                      {label}
+                    </span>
+                    <input
+                      className={smallInput}
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={sizePrice}
+                      onChange={(e) => fp(sizeKey, e.target.value)}
+                    />
+                    <span className={`text-xs ${th.textSub(dark)}`}>€</span>
+                    <button
+                      onClick={() => removeSize(sizeKey)}
+                      title="Retirer cette taille"
+                      className="text-red-400 hover:text-red-600 text-xs ml-1"
+                    >
+                      ✕
+                    </button>
+                  </div>
+                );
+              },
+            )}
+          </div>
+          {/* Ajouter taille */}
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              className={`${smallInput} w-32`}
+              placeholder="Nouvelle taille"
+              value={newSizeKey}
+              onChange={(e) => setNewSizeKey(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && addCustomSize()}
+            />
+            <button
+              onClick={addCustomSize}
+              className={`text-xs font-bold px-3 py-1.5 rounded-lg border active:scale-95 ${th.btnGhost(dark)}`}
+            >
+              + Taille
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <label
+            className={`text-xs font-semibold block mb-1 ${th.textSub(dark)}`}
+          >
+            Prix (€)
+          </label>
+          <input
+            className={smallInput}
+            type="number"
+            min="0"
+            step="0.1"
+            value={editForm.price ?? ""}
+            onChange={(e) => f("price", parseFloat(e.target.value) || 0)}
+          />
+        </div>
+      )}
+
+      {/* Statut */}
+      <div className="flex items-center gap-4">
+        <label className={`flex items-center gap-2 text-sm ${th.text(dark)}`}>
+          <input
+            type="checkbox"
+            checked={editForm.active !== false}
+            onChange={(e) => f("active", e.target.checked)}
+            className="accent-emerald-600 w-4 h-4"
+          />
+          Visible sur la carte
+        </label>
+      </div>
+
+      {/* Actions */}
+      <div className="flex gap-2 pt-1">
+        <button
+          onClick={saveItem}
+          disabled={saving}
+          className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-5 py-2.5 rounded-xl active:scale-95 transition-all disabled:opacity-50"
+        >
+          {saving ? "⏳ Enregistrement…" : "✅ Valider"}
+        </button>
+        <button
+          onClick={cancelEdit}
+          className={`text-xs font-bold px-4 py-2.5 rounded-xl border active:scale-95 ${th.btnGhost(dark)}`}
+        >
+          Annuler
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div
+      className={`rounded-3xl shadow-sm border p-5 mb-6 ${dark ? "bg-zinc-900 border-zinc-800" : "bg-white border-amber-100"}`}
+      style={{
+        background: dark
+          ? undefined
+          : "linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%)",
+      }}
+    >
+      <div className="flex items-center justify-between mb-4">
+        <h3 className={`font-bold ${th.text(dark)}`}>📋 Gestion du menu</h3>
+        <div className="flex items-center gap-2">
+          {saved && (
+            <span className="text-xs text-emerald-500 font-bold animate-pulse">
+              ✅ Sauvé
+            </span>
+          )}
+          {error && (
+            <span className="text-xs text-red-500 font-bold">⚠️ {error}</span>
+          )}
+        </div>
+      </div>
+
+      {/* Best seller info */}
+      {bestSeller && (
+        <div
+          className={`rounded-xl px-4 py-2 mb-4 text-xs flex items-center gap-2 ${dark ? "bg-amber-900/30 text-amber-300" : "bg-amber-100 text-amber-800"}`}
+        >
+          <span className="text-base">🏆</span>
+          <span>
+            Best-seller actuel : <strong>{bestSeller}</strong> - calculé
+            automatiquement à partir des commandes payées
+          </span>
+        </div>
+      )}
+
+      {/* Tarifs globaux */}
+      <div
+        className={`rounded-2xl border p-4 mb-4 ${dark ? "border-zinc-700 bg-zinc-800/40" : "border-amber-200/60 bg-white/60"}`}
+      >
+        <div className="flex items-center justify-between mb-2">
+          <p
+            className={`text-xs font-bold uppercase tracking-wide ${th.textSub(dark)}`}
+          >
+            💶 Tarifs globaux
+          </p>
+          {globalSaved && (
+            <span className="text-xs text-emerald-500 font-bold animate-pulse">
+              ✅
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-4">
+          <div className="flex items-center gap-2">
+            <span className={`text-xs ${th.text(dark)}`}>Supplément extra</span>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              className={`w-16 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
+              value={globalPrices.extras ?? 2}
+              onChange={(e) =>
+                saveGlobal({ extras: parseFloat(e.target.value) || 0 })
+              }
+            />
+            <span className={`text-xs ${th.textSub(dark)}`}>€</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className={`text-xs ${th.text(dark)}`}>
+              Livraison sans pizza
+            </span>
+            <input
+              type="number"
+              min="0"
+              step="0.1"
+              className={`w-16 border-2 rounded-lg px-2 py-1 text-sm text-right outline-none ${th.input(dark)}`}
+              value={globalPrices.delivery ?? 2}
+              onChange={(e) =>
+                saveGlobal({ delivery: parseFloat(e.target.value) || 0 })
+              }
+            />
+            <span className={`text-xs ${th.textSub(dark)}`}>€</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs + ajouter */}
+      <div className="flex gap-2 mb-4 flex-wrap">
+        {[
+          ["pizza", "🍕 Pizzas"],
+          ["drink", "🥤 Boissons"],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => {
+              setTab(id);
+              cancelEdit();
+            }}
+            className={`text-xs font-bold px-4 py-2 rounded-xl transition-all ${
+              tab === id
+                ? "bg-emerald-600 text-white"
+                : `border ${th.btnGhost(dark)}`
+            }`}
+          >
+            {label} ({items.filter((i) => i.type === id).length})
+          </button>
+        ))}
+        <button
+          onClick={startAdd}
+          className="ml-auto bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl active:scale-95 transition-all"
+        >
+          + Ajouter
+        </button>
+      </div>
+
+      {loading ? (
+        <p className={`text-sm text-center py-8 ${th.textSub(dark)}`}>
+          Chargement du menu…
+        </p>
+      ) : (
+        <>
+          {addMode && renderForm()}
+
+          {filtered.length === 0 ? (
+            <p className={`text-sm text-center py-6 ${th.textSub(dark)}`}>
+              Aucun article. Clique "+ Ajouter" ou vérifie la connexion
+              Supabase.
+            </p>
+          ) : (
+            <div
+              className={`rounded-2xl border overflow-hidden ${th.border(dark)}`}
+            >
+              {filtered.map((item, i) => (
+                <div key={item.id}>
+                  {editId === item.id ? (
+                    <div className="px-4 py-3">{renderForm()}</div>
+                  ) : (
+                    <div
+                      className={`flex items-center gap-3 px-4 py-3 ${i > 0 ? `border-t ${th.border(dark)}` : ""} ${item.active === false ? "opacity-40" : ""}`}
+                    >
+                      {/* Image */}
+                      {resolveMenuImage(item) ? (
+                        <img
+                          src={resolveMenuImage(item)}
+                          alt=""
+                          className="w-10 h-10 object-contain rounded-lg flex-shrink-0"
+                        />
+                      ) : (
+                        <span className="w-10 h-10 flex items-center justify-center text-xl flex-shrink-0">
+                          {tab === "pizza" ? "🍕" : "🥤"}
+                        </span>
+                      )}
+
+                      {/* Info */}
+                      <div className="flex-1 min-w-0">
+                        <p
+                          className={`text-sm font-bold truncate ${th.text(dark)}`}
+                        >
+                          {item.name}
+                          {bestSeller && item.name === bestSeller && (
+                            <span
+                              className="ml-1 text-amber-500"
+                              title="Best-seller (auto)"
+                            >
+                              🏆
+                            </span>
+                          )}
+                          {item.active === false && (
+                            <span className="ml-1 text-blue-400" title="Gelé">
+                              ❄️
+                            </span>
+                          )}
+                        </p>
+                        <p className={`text-xs truncate ${th.textSub(dark)}`}>
+                          {item.category}
+                          {item.description ? ` · ${item.description}` : ""}
+                        </p>
+                      </div>
+
+                      {/* Prix */}
+                      <div className="text-right flex-shrink-0">
+                        {tab === "pizza" && item.prices ? (
+                          <div
+                            className={`text-[10px] leading-relaxed ${th.textSub(dark)}`}
+                          >
+                            {Object.entries(item.prices).map(([k, v]) => {
+                              const lbl =
+                                SIZE_DEFS.find((s) => s.key === k)
+                                  ?.label?.split("·")[0]
+                                  ?.trim() || k;
+                              return (
+                                <div key={k}>
+                                  {lbl} {v}€
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className={`text-sm font-bold ${th.text(dark)}`}>
+                            {item.price} €
+                          </p>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div className="flex gap-1 flex-shrink-0">
+                        <button
+                          onClick={() => toggleActive(item)}
+                          title={
+                            item.active !== false
+                              ? "Geler (masquer de la carte)"
+                              : "Remettre en ligne"
+                          }
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs active:scale-90 border ${
+                            item.active !== false
+                              ? dark
+                                ? "border-zinc-600 text-zinc-300"
+                                : "border-gray-200 text-gray-600"
+                              : "border-blue-400 bg-blue-50 text-blue-500"
+                          }`}
+                        >
+                          {item.active !== false ? "❄️" : "☀️"}
+                        </button>
+                        <button
+                          onClick={() => startEdit(item)}
+                          title="Modifier"
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs active:scale-90 border ${th.btnGhost(dark)}`}
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          onClick={() => removeItem(item)}
+                          title="Supprimer définitivement"
+                          className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs active:scale-90 border ${th.btnGhost(dark)} hover:bg-red-100 hover:border-red-300`}
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className={`text-xs mt-3 ${th.textSub(dark)}`}>
+            ❄️ = gelé (masqué de la carte sans supprimer) · 🏆 = best-seller
+            auto (pizza la + commandée payée)
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
    ADMIN VIEW - Dashboard
 ═══════════════════════════════════════════════════ */
 
-function AdminView({ onBack, dark, user }) {
+function AdminView({ onBack, dark, user, onMenuChange }) {
   const statusColor = {
     "En livraison": "bg-blue-500",
     Prête: "bg-emerald-500",
@@ -7210,7 +7942,7 @@ function AdminView({ onBack, dark, user }) {
         </span>
       </div>
       <AccessManager dark={dark} />
-      <PricesPanel dark={dark} />
+      <MenuManagementPanel dark={dark} onMenuChange={onMenuChange} />
       <OffersPanel dark={dark} />
       <InventoryPanel dark={dark} />
       <IncidentsPanel dark={dark} user={user} />
@@ -9223,6 +9955,110 @@ function Footer({
 }
 
 /* ═══════════════════════════════════════════════════
+   OFFERS POPUP - affiché à l'ouverture du site si offre active
+═══════════════════════════════════════════════════ */
+
+function OffersPopup({ dark, onClose }) {
+  const offers = OffersDB.active();
+  if (offers.length === 0) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className={`relative w-full max-w-sm rounded-3xl shadow-2xl overflow-hidden ${dark ? "bg-zinc-900" : "bg-white"}`}
+        style={{ animation: "toastIn 0.4s ease" }}
+      >
+        {/* Header festif */}
+        <div className="bg-gradient-to-r from-emerald-500 to-emerald-600 px-6 py-5 text-white text-center">
+          <div className="text-4xl mb-2">🎉</div>
+          <h3 className="text-xl font-black">
+            {offers.length === 1
+              ? "Offre en cours !"
+              : `${offers.length} offres en cours !`}
+          </h3>
+        </div>
+
+        <div className="px-6 py-4 space-y-3 max-h-64 overflow-y-auto">
+          {offers.map((offer) => (
+            <div
+              key={offer.id}
+              className={`rounded-2xl p-4 border ${dark ? "bg-zinc-800 border-zinc-700" : "bg-emerald-50 border-emerald-100"}`}
+            >
+              <p className={`font-bold text-sm ${th.text(dark)}`}>
+                {offer.label || offer.type}
+              </p>
+              {offer.description && (
+                <p className={`text-xs mt-1 ${th.textSub(dark)}`}>
+                  {offer.description}
+                </p>
+              )}
+              {offer.value && (
+                <span className="inline-block mt-2 bg-emerald-600 text-white text-xs font-bold px-3 py-1 rounded-full">
+                  {offer.type === "pct"
+                    ? `−${offer.value}%`
+                    : offer.type === "fixed"
+                      ? `−${offer.value}€`
+                      : offer.type === "2for1"
+                        ? "2 pour 1"
+                        : offer.type === "free_drink"
+                          ? "🥤 Boisson offerte"
+                          : offer.type === "fixed_price"
+                            ? `${offer.value}€`
+                            : ""}
+                </span>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="px-6 pb-5">
+          <button
+            onClick={onClose}
+            className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3.5 rounded-2xl active:scale-95 transition-all text-sm"
+          >
+            🍕 Commander maintenant
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Petit bandeau affiché dans le panier quand une offre est active
+function OffersCartBanner({ dark }) {
+  const offers = OffersDB.active();
+  if (offers.length === 0) return null;
+
+  return (
+    <div
+      className={`rounded-2xl p-3 mb-4 flex items-center gap-3 ${dark ? "bg-emerald-900/30 border border-emerald-800" : "bg-emerald-50 border border-emerald-200"}`}
+    >
+      <span className="text-2xl">🎁</span>
+      <div className="flex-1 min-w-0">
+        <p
+          className={`text-xs font-bold ${dark ? "text-emerald-300" : "text-emerald-700"}`}
+        >
+          {offers.length === 1
+            ? "Offre active"
+            : `${offers.length} offres actives`}
+        </p>
+        <p
+          className={`text-[11px] truncate ${dark ? "text-emerald-400" : "text-emerald-600"}`}
+        >
+          {offers.map((o) => o.label || o.type).join(" · ")}
+        </p>
+      </div>
+      <span className="text-lg">→</span>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════
    MAIN APP
 ═══════════════════════════════════════════════════ */
 
@@ -9239,7 +10075,26 @@ export default function HousePizza() {
   const [user, setUser] = useState(null);
   const [orderData, setOrderData] = useState(null);
   const [legalPage, setLegalPage] = useState(null);
+  const [showOffersPopup, setShowOffersPopup] = useState(false);
   const { toasts, show: showToast } = useToast();
+  const {
+    pizzas: MENU_PIZZAS,
+    drinks: MENU_DRINKS,
+    bestSellerName,
+    reloadMenu,
+  } = useMenuData();
+
+  // Popup offres : afficher 1 fois par session si offre active
+  useEffect(() => {
+    const active = OffersDB.active();
+    if (active.length > 0 && !sessionStorage.getItem("hp_offers_seen")) {
+      const timer = setTimeout(() => {
+        setShowOffersPopup(true);
+        sessionStorage.setItem("hp_offers_seen", "1");
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, []);
 
   // ── Auth Supabase : chargement session au démarrage ──
   useEffect(() => {
@@ -9293,7 +10148,9 @@ export default function HousePizza() {
         if (item.type !== "pizza") return false;
         if (
           t.pizzaIds?.length &&
-          !t.pizzaIds.includes(PIZZAS.find((p) => p.name === item.name)?.id)
+          !t.pizzaIds.includes(
+            MENU_PIZZAS.find((p) => p.name === item.name)?.id,
+          )
         )
           return false;
         if (t.sizes?.length && !t.sizes.includes(item.size)) return false;
@@ -9303,7 +10160,9 @@ export default function HousePizza() {
         if (item.type !== "drink") return false;
         if (
           t.drinkIds?.length &&
-          !t.drinkIds.includes(DRINKS.find((d) => d.name === item.name)?.id)
+          !t.drinkIds.includes(
+            MENU_DRINKS.find((d) => d.name === item.name)?.id,
+          )
         )
           return false;
         return true;
@@ -9344,7 +10203,7 @@ export default function HousePizza() {
               i.type === "drink" &&
               (t.drinkIds?.length === 0 ||
                 t.drinkIds?.includes(
-                  DRINKS.find((d) => d.name === i.name)?.id,
+                  MENU_DRINKS.find((d) => d.name === i.name)?.id,
                 )),
           );
           if (drinks.length > 0) {
@@ -9482,7 +10341,9 @@ export default function HousePizza() {
   };
 
   const filtered =
-    filter === "all" ? PIZZAS : PIZZAS.filter((p) => p.category === filter);
+    filter === "all"
+      ? MENU_PIZZAS
+      : MENU_PIZZAS.filter((p) => p.category === filter);
 
   return (
     <div
@@ -9726,7 +10587,7 @@ export default function HousePizza() {
             🥤 Boissons
           </h2>
           {["33cl", "1.5L", "2L"].map((cat) => {
-            const catDrinks = DRINKS.filter((d) => d.category === cat);
+            const catDrinks = MENU_DRINKS.filter((d) => d.category === cat);
             const vs = VOLUME_STYLE[cat];
             return (
               <div key={cat} className="mb-6">
@@ -10011,7 +10872,12 @@ export default function HousePizza() {
       )}
 
       {step === "admin" && (
-        <AdminView dark={dark} onBack={() => setStep("menu")} user={user} />
+        <AdminView
+          dark={dark}
+          onBack={() => setStep("menu")}
+          user={user}
+          onMenuChange={reloadMenu}
+        />
       )}
 
       {step === "cashier" && (
@@ -10061,6 +10927,11 @@ export default function HousePizza() {
           total={total}
           onOpenCart={() => setStep("cart")}
         />
+      )}
+
+      {/* Popup offres à l'ouverture */}
+      {showOffersPopup && (
+        <OffersPopup dark={dark} onClose={() => setShowOffersPopup(false)} />
       )}
     </div>
   );

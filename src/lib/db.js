@@ -368,9 +368,14 @@ export async function getMenuItems() {
 }
 
 export async function createMenuItem(item) {
+  // On retire les champs qui pourraient ne pas exister côté DB
+  const clean = { ...item };
+  delete clean.id;
+  delete clean.created_at;
+  delete clean.updated_at;
   const { data, error } = await supabase
     .from("menu_items")
-    .insert(item)
+    .insert(clean)
     .select()
     .single();
   if (error) throw error;
@@ -378,9 +383,13 @@ export async function createMenuItem(item) {
 }
 
 export async function updateMenuItem(id, patch) {
+  const clean = { ...patch };
+  delete clean.id;
+  delete clean.created_at;
+  clean.updated_at = new Date().toISOString();
   const { data, error } = await supabase
     .from("menu_items")
-    .update({ ...patch, updated_at: new Date().toISOString() })
+    .update(clean)
     .eq("id", id)
     .select()
     .single();
@@ -403,3 +412,54 @@ export async function seedMenuItems(items) {
   if (error) throw error;
   return true;
 }
+
+/* ═══════════════════════════════════════════════════
+   MENU IMAGE UPLOAD (Supabase Storage)
+   Bucket : "menu-images" (à créer dans le Dashboard)
+═══════════════════════════════════════════════════ */
+
+export async function uploadMenuImage(file) {
+  const ext = file.name.split(".").pop() || "png";
+  const path = `menu/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.${ext}`;
+  const { error } = await supabase.storage
+    .from("menu-images")
+    .upload(path, file, { cacheControl: "3600", upsert: false });
+  if (error) throw error;
+  const { data: urlData } = supabase.storage
+    .from("menu-images")
+    .getPublicUrl(path);
+  return urlData.publicUrl;
+}
+
+export async function deleteMenuImage(url) {
+  if (!url) return;
+  const match = url.match(/menu-images\/(.+)$/);
+  if (!match) return;
+  await supabase.storage.from("menu-images").remove([match[1]]);
+}
+
+/* ═══════════════════════════════════════════════════
+   BEST SELLER — pizza la + commandée (payée)
+═══════════════════════════════════════════════════ */
+
+export async function getBestSellerPizza() {
+  const { data, error } = await supabase
+    .from("orders")
+    .select("items")
+    .in("payment_status", ["paid", "cash"])
+    .neq("status", "cancelled");
+  if (error || !data) return null;
+
+  const counts = {};
+  for (const row of data) {
+    if (!Array.isArray(row.items)) continue;
+    for (const it of row.items) {
+      if (it.type === "pizza" && !it.free) {
+        counts[it.name] = (counts[it.name] || 0) + 1;
+      }
+    }
+  }
+  if (Object.keys(counts).length === 0) return null;
+  return Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0]; // nom de la pizza
+}
+

@@ -1,7 +1,7 @@
 // supabase/functions/stripe-webhook/index.ts
 //
 // Reçoit les événements Stripe et met à jour orders.payment_status.
-// C'est la SEULE source de vérité pour "payé" — jamais le client.
+// C'est la SEULE source de vérité pour "payé" - jamais le client.
 //
 // Déploiement (⚠️ désactiver la vérif JWT, Stripe n'envoie pas de token Supabase) :
 //   supabase functions deploy stripe-webhook --no-verify-jwt
